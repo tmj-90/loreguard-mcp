@@ -7,9 +7,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  auditMessageForFieldError,
   auditMessageForTooLong,
   checkLength,
+  checkOptionalEnum,
+  checkOptionalHttpUrl,
   LENGTH_CAPS,
+  requireNonEmptyString,
+  tooLongToFieldError,
 } from "../src/mcp/validation.js";
 
 function repeat(ch: string, n: number): string {
@@ -100,5 +105,80 @@ describe("LENGTH_CAPS — contract", () => {
 
   it("body is intentionally absent — body has no length cap (asymmetry preserved)", () => {
     expect("body" in LENGTH_CAPS).toBe(false);
+  });
+});
+
+describe("requireNonEmptyString", () => {
+  it("passes for a non-empty trimmed string", () => {
+    expect(requireNonEmptyString("title", "hello")).toBeNull();
+  });
+  it("fails for undefined, null, empty, or whitespace-only", () => {
+    for (const v of [undefined, null, "", "   ", "\t\n"]) {
+      const err = requireNonEmptyString("body", v);
+      expect(err?.error).toBe("body_required");
+      expect(err?.field).toBe("body");
+      expect(typeof err?.hint).toBe("string");
+    }
+  });
+  it("fails for non-string types", () => {
+    expect(requireNonEmptyString("title", 42)?.error).toBe("title_required");
+    expect(requireNonEmptyString("title", {})?.error).toBe("title_required");
+  });
+});
+
+describe("checkOptionalHttpUrl", () => {
+  it("passes when absent / empty (optional)", () => {
+    expect(checkOptionalHttpUrl("source", undefined)).toBeNull();
+    expect(checkOptionalHttpUrl("source", null)).toBeNull();
+    expect(checkOptionalHttpUrl("source", "")).toBeNull();
+  });
+  it("passes for http and https", () => {
+    expect(checkOptionalHttpUrl("source", "http://x.example.com")).toBeNull();
+    expect(checkOptionalHttpUrl("source", "https://x.example.com/a/b")).toBeNull();
+  });
+  it("fails for a non-URL string, a non-string, and non-http(s) protocols", () => {
+    expect(checkOptionalHttpUrl("source", "not a url")?.error).toBe("source_invalid_url");
+    expect(checkOptionalHttpUrl("source", 42)?.error).toBe("source_invalid_url");
+    expect(checkOptionalHttpUrl("source", "ftp://host/x")?.error).toBe("source_invalid_url");
+  });
+});
+
+describe("checkOptionalEnum", () => {
+  const allowed = ["low", "medium", "high"];
+  it("passes when absent or a valid member", () => {
+    expect(checkOptionalEnum("confidence", undefined, allowed)).toBeNull();
+    expect(checkOptionalEnum("confidence", "high", allowed)).toBeNull();
+  });
+  it("fails for an out-of-set value, naming the field", () => {
+    const err = checkOptionalEnum("confidence", "very-high", allowed);
+    expect(err?.error).toBe("confidence_invalid");
+    expect(err?.field).toBe("confidence");
+    expect(err?.hint).toContain("low, medium, high");
+  });
+});
+
+describe("tooLongToFieldError + auditMessageForFieldError", () => {
+  it("maps a TooLongError into the unified FieldError shape", () => {
+    const tooLong = checkLength("title", repeat("t", 250))!;
+    const fe = tooLongToFieldError("title", tooLong);
+    expect(fe.field).toBe("title");
+    expect(fe.error).toBe("title_too_long");
+    expect(fe.provided).toBe(250);
+    expect(fe.max).toBe(200);
+    expect(fe.suggested_cut?.length).toBe(200);
+  });
+  it("audit string includes counts for length errors, bare error otherwise", () => {
+    const lenErr = tooLongToFieldError("title", checkLength("title", repeat("t", 250))!);
+    expect(auditMessageForFieldError(lenErr)).toBe("title_too_long: 250 > 200");
+    const reqErr = requireNonEmptyString("body", undefined)!;
+    expect(auditMessageForFieldError(reqErr)).toBe("body_required");
+  });
+});
+
+describe("LENGTH_CAPS — extended fields", () => {
+  it("covers observation, query, and reason", () => {
+    expect(LENGTH_CAPS.observation).toBe(800);
+    expect(LENGTH_CAPS.query).toBe(500);
+    expect(LENGTH_CAPS.reason).toBe(500);
   });
 });

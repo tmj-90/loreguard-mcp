@@ -6,6 +6,23 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Fixed — MCP tools return structured errors, not opaque -32602 dumps
+
+- **Bad input to a write tool no longer masks the real cause.** Reported
+  from real use: `suggest_lore` with a missing `body` (or a bad `source`
+  URL, etc.) failed inside the MCP SDK's zod layer and returned an opaque
+  `-32602 Input validation error` with a raw dump like
+  `path: ["body"], received: undefined` — which sent the agent on a long,
+  wrong retry loop "fixing the body" when the real problem was elsewhere.
+  The schemas for all five argument-taking tools (`suggest_lore`,
+  `report_conflict`, `record_absence`, `find_dependents`,
+  `declare_boundary`) are now lenient; validation happens in the handler
+  and every failure returns a well-formed, correctable
+  `{ error, field, hint, suggested_cut? }` (NOT `isError`) that names the
+  exact field to fix. Valid input is unchanged. The `suggest_lore`
+  description now also states the title cap (200) alongside the summary
+  cap (800), which it previously omitted.
+
 ### Removed — one cold-start path, not four
 
 - **`loreguard induct` and `loreguard ingest-md` are gone.** The

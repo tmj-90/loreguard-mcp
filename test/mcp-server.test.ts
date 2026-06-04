@@ -471,14 +471,199 @@ describe("MCP — find_dependents + declare_boundary", () => {
     expect(JSON.stringify(dep.json)).not.toContain("attacker.example");
   });
 
-  it("declare_boundary rejects a bad role at the schema boundary", async () => {
+  it("declare_boundary rejects a bad role with a structured field error", async () => {
     client = await connectClient(db);
-    const { isError, text } = await callJson(client, "declare_boundary", {
+    const { isError, json } = await callJson(client, "declare_boundary", {
       repo: "r",
       contract: "c",
       role: "uses",
     });
-    expect(isError).toBe(true);
-    expect(text).toContain("validation");
+    // Not a tool crash — a well-formed, correctable response.
+    expect(isError).toBe(false);
+    expect(json.error).toBe("role_invalid");
+    expect(json.field).toBe("role");
+    expect(json.hint).toContain("provides");
+  });
+});
+
+describe("MCP — structured validation errors (no raw -32602 masking)", () => {
+  // Regression guard for the reported bug: a bad/missing field on any
+  // write tool used to fail inside the SDK's zod layer and return an
+  // opaque `-32602` with a `path:["body"], received: undefined` dump,
+  // which sent agents on long wrong retries. Every failure must now be a
+  // well-formed `{ error, field, hint }` (isError=false) that names the
+  // field to fix.
+  function expectFieldError(
+    res: { isError: boolean; json: any },
+    field: string,
+  ): void {
+    expect(res.isError).toBe(false);
+    expect(res.json.field).toBe(field);
+    expect(typeof res.json.error).toBe("string");
+    expect(typeof res.json.hint).toBe("string");
+  }
+
+  describe("suggest_lore", () => {
+    it("missing body → body_required (the exact reported failure)", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "Short clean title",
+        summary: "ok summary",
+        // body omitted
+      });
+      expect(res.json.error).toBe("body_required");
+      expectFieldError(res, "body");
+      // The masking string the agent used to see must NOT appear.
+      expect(res.text).not.toContain("-32602");
+      expect(res.text).not.toContain("received");
+    });
+
+    it("empty-string body → body_required", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "t",
+        summary: "s",
+        body: "   ",
+      });
+      expectFieldError(res, "body");
+    });
+
+    it("missing title → title_required (checked before body)", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {});
+      expect(res.json.error).toBe("title_required");
+    });
+
+    it("bad source URL → source_invalid_url, not a crash", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "t",
+        summary: "s",
+        body: "b",
+        source: "not-a-url",
+      });
+      expectFieldError(res, "source");
+      expect(res.json.error).toBe("source_invalid_url");
+    });
+
+    it("bad confidence enum → confidence_invalid", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "t",
+        summary: "s",
+        body: "b",
+        confidence: "very-high",
+      });
+      expectFieldError(res, "confidence");
+    });
+
+    it("over-cap title → title_too_long with a paste-ready suggested_cut", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "t".repeat(250),
+        summary: "s",
+        body: "b",
+      });
+      expect(res.json.error).toBe("title_too_long");
+      expect(res.json.field).toBe("title");
+      expect(res.json.suggested_cut.length).toBe(200);
+    });
+
+    it("a fully valid call still creates a draft", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "Valid",
+        summary: "valid",
+        body: "valid",
+        source: "https://example.com/x",
+        confidence: "high",
+      });
+      expect(res.json.status).toBe("draft");
+      expect(res.json.id).toMatch(/^[a-z2-9]{8}$/);
+    });
+  });
+
+  describe("report_conflict", () => {
+    it("missing observation → observation_required", async () => {
+      const existing = addLore(db, { title: "Rule", summary: "s", body: "b" });
+      client = await connectClient(db);
+      const res = await callJson(client, "report_conflict", {
+        existingId: existing.id,
+      });
+      expectFieldError(res, "observation");
+    });
+
+    it("missing existingId → existingId_required", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "report_conflict", {
+        observation: "the code disagrees",
+      });
+      expectFieldError(res, "existingId");
+    });
+
+    it("bad source URL → source_invalid_url", async () => {
+      const existing = addLore(db, { title: "Rule", summary: "s", body: "b" });
+      client = await connectClient(db);
+      const res = await callJson(client, "report_conflict", {
+        existingId: existing.id,
+        observation: "disagrees",
+        source: "ftp://nope",
+      });
+      expectFieldError(res, "source");
+    });
+  });
+
+  describe("record_absence", () => {
+    beforeEach(() => {
+      process.env["LOREGUARD_ALLOW_MCP_ABSENCE"] = "1";
+    });
+
+    it("missing reason → reason_required (past the env gate)", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "record_absence", {
+        query: "kafka exactly-once",
+      });
+      expectFieldError(res, "reason");
+    });
+
+    it("bad expiresInDays → expiresInDays_invalid", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "record_absence", {
+        query: "q",
+        reason: "no policy",
+        expiresInDays: 9999,
+      });
+      expectFieldError(res, "expiresInDays");
+    });
+  });
+
+  describe("find_dependents", () => {
+    it("missing contract → contract_required", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "find_dependents", {});
+      expectFieldError(res, "contract");
+    });
+  });
+
+  describe("declare_boundary", () => {
+    it("missing repo → repo_required", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "declare_boundary", {
+        contract: "c",
+        role: "provides",
+      });
+      expectFieldError(res, "repo");
+    });
+
+    it("bad kind enum → kind_invalid", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "declare_boundary", {
+        repo: "r",
+        contract: "c",
+        role: "provides",
+        kind: "widget",
+      });
+      expectFieldError(res, "kind");
+    });
   });
 });

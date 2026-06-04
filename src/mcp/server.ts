@@ -28,9 +28,14 @@ import {
   stripPossibleConflicts,
 } from "./redact.js";
 import {
-  auditMessageForTooLong,
+  auditMessageForFieldError,
   checkLength,
+  checkOptionalEnum,
+  checkOptionalHttpUrl,
+  type FieldError,
   LENGTH_CAPS,
+  requireNonEmptyString,
+  tooLongToFieldError,
 } from "./validation.js";
 import type { Boundary } from "../db/types.js";
 import { VERSION } from "../version.js";
@@ -424,37 +429,50 @@ export function buildMcpServer(db: Database): McpServer {
         "near-duplicate records you should be aware of in `possibleDuplicates` " +
         "— if a hit looks like the same rule, your suggestion is probably " +
         "redundant; consider not calling at all, or call with a sharper " +
-        "title that complements rather than duplicates.",
+        "title that complements rather than duplicates.\n\n" +
+        "Required: `title` (≤ " +
+        LENGTH_CAPS.title +
+        " chars), `summary` (≤ " +
+        LENGTH_CAPS.summary +
+        " chars), `body` (no length limit). `source` must be an http(s) " +
+        "URL if given. On any bad input you get a structured " +
+        "`{ error, field, hint }` naming exactly what to fix — fix that " +
+        "field and resend; don't guess.",
       inputSchema: {
-        // Length caps live in the handler, not the schema. zod's max-cap
-        // path produced "body is undefined" upstream when an over-cap
-        // summary failed parsing — the cause was masked and agents
-        // dropped the suggestion. The handler now returns a structured
-        // `{error: "summary_too_long", suggested_cut, ...}` the agent
-        // can correct against. The description still names the cap so
-        // well-behaved agents respect it upfront.
+        // ALL fields are intentionally lenient (optional, no .min/.max/.url/
+        // .enum). The MCP SDK validates this schema BEFORE our handler runs
+        // and, on any failure, returns an opaque `-32602` with a raw zod
+        // dump (e.g. `path:["body"], received: undefined`) — which sent
+        // agents on long, wrong retry loops "fixing the body" when the real
+        // problem was a missing field or a bad URL elsewhere. By accepting
+        // anything here and validating in the handler, EVERY bad input
+        // becomes a structured `{error, field, hint, ...}` the agent can
+        // self-correct against. The caps are still named in the
+        // descriptions so well-behaved agents get them right upfront.
         title: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            `Short title — what is the rule / fact? Hard cap ${LENGTH_CAPS.title} chars.`,
+            `Short title — what is the rule / fact? REQUIRED. Hard cap ${LENGTH_CAPS.title} chars.`,
           ),
         summary: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            `One-paragraph summary (≤ ${LENGTH_CAPS.summary} chars). This is what most search ` +
-              "results show — should stand alone without the body; assume " +
-              "readers won't drill in. Aim for the *why* and the *what*, " +
-              "not just the *what*; a longer cap exists so search hits can " +
-              "be self-contained without a follow-up get_lore call.",
+            `One-paragraph summary (REQUIRED; ≤ ${LENGTH_CAPS.summary} chars). This is what most ` +
+              "search results show — should stand alone without the body; " +
+              "assume readers won't drill in. Aim for the *why* and the " +
+              "*what*, not just the *what*; a longer cap exists so search " +
+              "hits can be self-contained without a follow-up get_lore call.",
           ),
         body: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            "Full detail / reasoning / evidence. Markdown is fine. " +
-              "Include enough context to verify the claim.",
+            "Full detail / reasoning / evidence (REQUIRED). Markdown is " +
+              "fine. No length limit (body is fetched on demand via " +
+              "get_lore, not returned in search hits). Include enough " +
+              "context to verify the claim.",
           ),
         repos: z
           .array(z.string())
@@ -470,77 +488,86 @@ export function buildMcpServer(db: Database): McpServer {
               "deploy, conventions, gotchas, incident-lessons.",
           ),
         source: z
-          .url()
+          .string()
           .optional()
           .describe(
             "URL: PR / ADR / incident / Slack permalink that justifies this " +
-              "record. Records WITHOUT a source are treated as lower-trust.",
+              "record (must be http(s) if provided). Records WITHOUT a " +
+              "source are treated as lower-trust.",
           ),
         confidence: z
-          .enum(["low", "medium", "high"])
+          .string()
           .optional()
           .describe(
-            "How sure are you? Default 'medium'. Use 'low' for inferred " +
-              "conventions; 'high' only when you have a source link.",
+            "How sure are you? One of low | medium | high. Default 'medium'. " +
+              "Use 'low' for inferred conventions; 'high' only with a source link.",
           ),
         team: z.string().optional().describe("Owning team, if known."),
       },
     },
     async (args) => {
-      // Build a sanitised audit shape that DELIBERATELY omits the body
-      // (and summary length is bounded by the schema so it's safe to keep).
-      // This is the trust-model boundary called out in SECURITY.md — the
-      // audit log records that a suggestion happened, not the suggestion's
-      // contents. To inspect the content, read the SQLite `lore` row.
+      // All validation happens HERE, not in the schema (see inputSchema
+      // comment). Every failure returns a structured `{error, field, hint}`
+      // the agent can self-correct against — never a raw SDK -32602 dump.
+      //
+      // Sanitised audit shape DELIBERATELY omits the body (trust-model
+      // boundary from SECURITY.md — the audit records that a suggestion
+      // happened, not its contents). Lengths are computed defensively
+      // since the fields are now optional at the schema layer.
       const sanitised: Record<string, unknown> = {
         title: args.title,
-        summaryChars: args.summary.length,
-        bodyChars: args.body.length,
+        summaryChars: typeof args.summary === "string" ? args.summary.length : 0,
+        bodyChars: typeof args.body === "string" ? args.body.length : 0,
         repos: args.repos,
         tags: args.tags,
         source: args.source,
         confidence: args.confidence,
         team: args.team,
       };
-      // Length guards — check title first, then summary. Return the
-      // structured error to the agent (NOT isError: true — the response
-      // is well-formed, the agent just has to retry with shorter input)
-      // and log the cap breach to the audit log with a greppable shape.
-      const titleErr = checkLength("title", args.title);
-      if (titleErr) {
+      // Helper: log + return a structured field error (NOT isError — the
+      // response is well-formed; the agent just retries with a fix).
+      const fieldErrorResponse = (err: FieldError) => {
         audit({
           tool: "suggest_lore",
           request: sanitised,
-          error: auditMessageForTooLong(titleErr),
+          error: auditMessageForFieldError(err),
         });
         return {
-          content: [
-            { type: "text", text: JSON.stringify(titleErr, null, 2) },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify(err, null, 2) }],
         };
-      }
-      const summaryErr = checkLength("summary", args.summary);
-      if (summaryErr) {
-        audit({
-          tool: "suggest_lore",
-          request: sanitised,
-          error: auditMessageForTooLong(summaryErr),
-        });
-        return {
-          content: [
-            { type: "text", text: JSON.stringify(summaryErr, null, 2) },
-          ],
-        };
+      };
+      // 1. Required non-empty fields, in field order so the agent fixes
+      //    the first problem and re-sends.
+      const requiredErr =
+        requireNonEmptyString("title", args.title) ??
+        requireNonEmptyString("summary", args.summary) ??
+        requireNonEmptyString("body", args.body);
+      if (requiredErr) return fieldErrorResponse(requiredErr);
+      // 2. Optional-field shape: source must be http(s); confidence enum.
+      const optionalErr =
+        checkOptionalHttpUrl("source", args.source) ??
+        checkOptionalEnum("confidence", args.confidence, ["low", "medium", "high"]);
+      if (optionalErr) return fieldErrorResponse(optionalErr);
+      // 3. Length caps (title, then summary). Past the required-check,
+      //    these are definitely strings.
+      const title = args.title as string;
+      const summary = args.summary as string;
+      const body = args.body as string;
+      const titleLen = checkLength("title", title);
+      if (titleLen) return fieldErrorResponse(tooLongToFieldError("title", titleLen));
+      const summaryLen = checkLength("summary", summary);
+      if (summaryLen) {
+        return fieldErrorResponse(tooLongToFieldError("summary", summaryLen));
       }
       try {
         const lore = suggestLore(db, {
-          title: args.title,
-          summary: args.summary,
-          body: args.body,
+          title,
+          summary,
+          body,
           repos: args.repos,
           tags: args.tags,
           source: args.source,
-          confidence: args.confidence,
+          confidence: args.confidence as "low" | "medium" | "high" | undefined,
           team: args.team,
           author: "agent",
         });
@@ -561,7 +588,7 @@ export function buildMcpServer(db: Database): McpServer {
             db,
             {
               id: lore.id,
-              title: args.title,
+              title,
               repos: args.repos,
               tags: args.tags,
             },
@@ -634,28 +661,30 @@ export function buildMcpServer(db: Database): McpServer {
         "results — that's shared-scope overlap detection. This is explicit, " +
         "persisted, evidence-backed disagreement.",
       inputSchema: {
+        // Lenient schema; validated in the handler so failures return a
+        // structured {error, field, hint} instead of a raw SDK -32602.
         existingId: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            "The 8-char id of the existing ACTIVE record being challenged. " +
-              "Get this from a prior `search_lore` or `get_lore` call.",
+            "The 8-char id of the existing ACTIVE record being challenged " +
+              "(REQUIRED). Get this from a prior `search_lore` / `get_lore`.",
           ),
         observation: z
           .string()
-          .min(1)
-          .max(800)
-          .describe(
-            "What did you observe that contradicts the existing record? " +
-              "Stand-alone explanation — the reviewer reads this without " +
-              "additional context. ≤ 800 chars (mirrors suggest_lore.summary).",
-          ),
-        source: z
-          .url()
           .optional()
           .describe(
-            "URL pointing at the contradicting evidence (commit, PR, " +
-              "code permalink). Counter-claims with a source are higher-trust.",
+            "What did you observe that contradicts the existing record? " +
+              "(REQUIRED.) Stand-alone explanation — the reviewer reads " +
+              "this without additional context. ≤ 800 chars.",
+          ),
+        source: z
+          .string()
+          .optional()
+          .describe(
+            "URL pointing at the contradicting evidence (commit, PR, code " +
+              "permalink); must be http(s) if given. Counter-claims with a " +
+              "source are higher-trust.",
           ),
         repos: z
           .array(z.string())
@@ -678,11 +707,34 @@ export function buildMcpServer(db: Database): McpServer {
       // "agent X repeatedly challenges record Y" without leaking content.
       const sanitised: Record<string, unknown> = {
         existingId: args.existingId,
-        observationChars: args.observation.length,
+        observationChars:
+          typeof args.observation === "string" ? args.observation.length : 0,
         source: args.source,
         repos: args.repos,
         tags: args.tags,
       };
+      const fieldErrorResponse = (err: FieldError) => {
+        audit({
+          tool: "report_conflict",
+          request: sanitised,
+          error: auditMessageForFieldError(err),
+        });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(err, null, 2) }],
+        };
+      };
+      const requiredErr =
+        requireNonEmptyString("existingId", args.existingId) ??
+        requireNonEmptyString("observation", args.observation);
+      if (requiredErr) return fieldErrorResponse(requiredErr);
+      const sourceErr = checkOptionalHttpUrl("source", args.source);
+      if (sourceErr) return fieldErrorResponse(sourceErr);
+      const existingId = args.existingId as string;
+      const observation = args.observation as string;
+      const obsLen = checkLength("observation", observation);
+      if (obsLen) {
+        return fieldErrorResponse(tooLongToFieldError("observation", obsLen));
+      }
       try {
         // Restricted records are NEVER challengeable via MCP — the
         // core reportConflict refuses them regardless of the env
@@ -692,7 +744,7 @@ export function buildMcpServer(db: Database): McpServer {
         // No env check: even with LOREGUARD_ALLOW_RESTRICTED_MCP=1
         // the core would still throw. Telling the agent to set the
         // env var would be a lie.
-        const existing = getLore(db, args.existingId);
+        const existing = getLore(db, existingId);
         if (shouldRefuseConflictAgainstRestricted(existing)) {
           audit({
             tool: "report_conflict",
@@ -714,8 +766,8 @@ export function buildMcpServer(db: Database): McpServer {
           };
         }
         const draft = reportConflict(db, {
-          existingId: args.existingId,
-          observation: args.observation,
+          existingId,
+          observation,
           source: args.source,
           repos: args.repos,
           tags: args.tags,
@@ -791,21 +843,22 @@ export function buildMcpServer(db: Database): McpServer {
         "'here's a policy'); do NOT chain into a suggest_lore that just " +
         "re-states the absence.",
       inputSchema: {
+        // Lenient schema; validated in the handler so failures return a
+        // structured {error, field, hint} instead of a raw SDK -32602.
         query: z
           .string()
-          .min(1)
-          .max(500)
+          .optional()
           .describe(
-            "The query you ran that returned zero hits. Normalised at " +
-              "write time (lowercase, sorted tokens) so re-phrasings match.",
+            "The query you ran that returned zero hits (REQUIRED). " +
+              "Normalised at write time (lowercase, sorted tokens) so " +
+              "re-phrasings match. ≤ 500 chars.",
           ),
         reason: z
           .string()
-          .min(1)
-          .max(500)
+          .optional()
           .describe(
-            "One-sentence explanation of WHY this is a known gap " +
-              "(e.g. 'team has no policy yet; decided ad hoc per incident').",
+            "One-sentence explanation of WHY this is a known gap (REQUIRED; " +
+              "≤ 500 chars). E.g. 'team has no policy yet; ad hoc per incident'.",
           ),
         repo: z
           .string()
@@ -816,25 +869,22 @@ export function buildMcpServer(db: Database): McpServer {
           ),
         expiresInDays: z
           .number()
-          .int()
-          .min(1)
-          .max(365)
           .optional()
           .describe(
-            "Days until the marker auto-expires. Default 14. Stale 'we " +
-              "checked' claims age out fast so they don't become permanent " +
-              "and a bad call from one agent can't poison retrieval for a " +
-              "whole month.",
+            "Days until the marker auto-expires (1–365, default 14). Stale " +
+              "'we checked' claims age out fast so a bad call from one agent " +
+              "can't poison retrieval for long.",
           ),
       },
     },
     async (args) => {
       const sanitised: Record<string, unknown> = {
-        queryChars: args.query.length,
-        reasonChars: args.reason.length,
+        queryChars: typeof args.query === "string" ? args.query.length : 0,
+        reasonChars: typeof args.reason === "string" ? args.reason.length : 0,
         repo: args.repo,
         expiresInDays: args.expiresInDays,
       };
+      // Env gate first — a deliberate refusal, distinct from bad input.
       if (shouldGateAbsenceWrite(process.env)) {
         audit({
           tool: "record_absence",
@@ -851,12 +901,47 @@ export function buildMcpServer(db: Database): McpServer {
           ],
         };
       }
+      const fieldErrorResponse = (err: FieldError) => {
+        audit({
+          tool: "record_absence",
+          request: sanitised,
+          error: auditMessageForFieldError(err),
+        });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(err, null, 2) }],
+        };
+      };
+      const requiredErr =
+        requireNonEmptyString("query", args.query) ??
+        requireNonEmptyString("reason", args.reason);
+      if (requiredErr) return fieldErrorResponse(requiredErr);
+      const query = args.query as string;
+      const reason = args.reason as string;
+      const queryLen = checkLength("query", query);
+      if (queryLen) return fieldErrorResponse(tooLongToFieldError("query", queryLen));
+      const reasonLen = checkLength("reason", reason);
+      if (reasonLen) {
+        return fieldErrorResponse(tooLongToFieldError("reason", reasonLen));
+      }
+      // expiresInDays: optional; if present must be an integer in [1, 365].
+      let expiresInDays: number | undefined;
+      if (args.expiresInDays !== undefined) {
+        const n = args.expiresInDays;
+        if (!Number.isInteger(n) || n < 1 || n > 365) {
+          return fieldErrorResponse({
+            error: "expiresInDays_invalid",
+            field: "expiresInDays",
+            hint: "`expiresInDays` must be an integer between 1 and 365 (or omit it for the 14-day default).",
+          });
+        }
+        expiresInDays = n;
+      }
       try {
         const result = recordAbsence(db, {
-          query: args.query,
-          reason: args.reason,
+          query,
+          reason,
           repo: args.repo,
-          expiresInDays: args.expiresInDays,
+          expiresInDays,
           recordedBy: "agent",
         });
         audit({
@@ -923,18 +1008,31 @@ export function buildMcpServer(db: Database): McpServer {
       inputSchema: {
         contract: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            "The contract name: an event ('order-submitted'), endpoint " +
-              "('POST /v1/orders'), queue, table, or RPC. Matched after " +
-              "normalisation (lowercased / hyphenated), so casing and " +
+            "The contract name (REQUIRED): an event ('order-submitted'), " +
+              "endpoint ('POST /v1/orders'), queue, table, or RPC. Matched " +
+              "after normalisation (lowercased / hyphenated), so casing and " +
               "spacing don't matter.",
           ),
       },
     },
     async (args) => {
+      const contractErr = requireNonEmptyString("contract", args.contract);
+      if (contractErr) {
+        audit({
+          tool: "find_dependents",
+          request: args as Record<string, unknown>,
+          error: auditMessageForFieldError(contractErr),
+        });
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(contractErr, null, 2) },
+          ],
+        };
+      }
       try {
-        const result = findDependents(db, args.contract);
+        const result = findDependents(db, args.contract as string);
         audit({
           tool: "find_dependents",
           request: args as Record<string, unknown>,
@@ -1003,42 +1101,50 @@ export function buildMcpServer(db: Database): McpServer {
         "declare speculative or transient links — only durable " +
         "integration points a future agent should see.",
       inputSchema: {
+        // Lenient schema; validated in the handler so failures return a
+        // structured {error, field, hint} instead of a raw SDK -32602.
         repo: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            "The repo this edge belongs to (the producer's or consumer's " +
-              "name, as you'd write it in a Git URL — e.g. 'orders-svc').",
+            "The repo this edge belongs to (REQUIRED) — the producer's or " +
+              "consumer's name as in a Git URL, e.g. 'orders-svc'.",
           ),
         contract: z
           .string()
-          .min(1)
+          .optional()
           .describe(
-            "The contract name (event / endpoint / queue / table / rpc). " +
-              "Normalised (lowercased / hyphenated) so it joins across repos.",
+            "The contract name (REQUIRED; event / endpoint / queue / table " +
+              "/ rpc). Normalised (lowercased / hyphenated) so it joins " +
+              "across repos.",
           ),
         role: z
-          .enum(["provides", "consumes"])
+          .string()
+          .optional()
           .describe(
-            "'provides' if this repo owns/produces the contract; " +
+            "REQUIRED. 'provides' if this repo owns/produces the contract; " +
               "'consumes' if it depends on it.",
           ),
         kind: z
-          .enum(["event", "endpoint", "queue", "table", "rpc", "other"])
+          .string()
           .optional()
-          .describe("Optional classifier for the contract."),
+          .describe(
+            "Optional classifier: event | endpoint | queue | table | rpc | other.",
+          ),
         detail: z
           .string()
-          .max(800)
           .optional()
           .describe(
             "Optional note: which field/version/path, migration caveats, " +
               "the evidence you saw. ≤ 800 chars.",
           ),
         source: z
-          .url()
+          .string()
           .optional()
-          .describe("URL to the code / PR / doc that evidences this edge."),
+          .describe(
+            "URL to the code / PR / doc that evidences this edge (http(s) " +
+              "if given).",
+          ),
       },
     },
     async (args) => {
@@ -1047,14 +1153,50 @@ export function buildMcpServer(db: Database): McpServer {
         contract: args.contract,
         role: args.role,
         kind: args.kind,
-        detailChars: args.detail?.length,
+        detailChars: typeof args.detail === "string" ? args.detail.length : undefined,
         source: args.source,
       };
+      const fieldErrorResponse = (err: FieldError) => {
+        audit({
+          tool: "declare_boundary",
+          request: sanitised,
+          error: auditMessageForFieldError(err),
+        });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(err, null, 2) }],
+        };
+      };
+      const requiredErr =
+        requireNonEmptyString("repo", args.repo) ??
+        requireNonEmptyString("contract", args.contract) ??
+        requireNonEmptyString("role", args.role);
+      if (requiredErr) return fieldErrorResponse(requiredErr);
+      const roleErr = checkOptionalEnum("role", args.role, ["provides", "consumes"]);
+      if (roleErr) return fieldErrorResponse(roleErr);
+      const kindErr = checkOptionalEnum("kind", args.kind, [
+        "event",
+        "endpoint",
+        "queue",
+        "table",
+        "rpc",
+        "other",
+      ]);
+      if (kindErr) return fieldErrorResponse(kindErr);
+      const sourceErr = checkOptionalHttpUrl("source", args.source);
+      if (sourceErr) return fieldErrorResponse(sourceErr);
+      const detailLen =
+        typeof args.detail === "string" ? checkLength("observation", args.detail) : null;
+      if (detailLen) {
+        return fieldErrorResponse({
+          ...tooLongToFieldError("detail", detailLen),
+          hint: "Retry with a shorter `detail` (≤ 800 chars), or omit it.",
+        });
+      }
       try {
         const edge = suggestBoundary(db, {
-          repo: args.repo,
-          contract: args.contract,
-          role: args.role,
+          repo: args.repo as string,
+          contract: args.contract as string,
+          role: args.role as "provides" | "consumes",
           kind: args.kind,
           detail: args.detail,
           source: args.source,
