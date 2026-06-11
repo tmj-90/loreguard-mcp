@@ -876,6 +876,11 @@ the code, and hand-declare anything your stack hides. This is the
 mechanical-grep half of mapping; human (or onboard-agent) judgement is still
 the ratifying half.
 
+Candidates are **confidence-tiered**: unambiguous framework constructs (route
+definitions, `@KafkaListener`) are `high-signal` and sort first; generic
+method names (`.publish`, `.subscribe`) are flagged `review` so you scrutinise
+the fuzzier ones rather than rubber-stamping everything.
+
 Discovery also shows the **join moment** — when a candidate connects to an
 edge already in the map (from this repo or, after `sync pull`, another), it's
 flagged inline:
@@ -885,6 +890,16 @@ finance-svc consumes daily-rollup   ↔ provided by reporting-svc
 ```
 
 so a pile of per-repo edges visibly wires itself into one graph.
+
+**Commit the map as a manifest — `loreguard graph --manifest`.** It emits a
+deterministic, **timestamp-free** JSON snapshot
+(`{ schemaVersion, repos, deps, gaps }`) to commit as
+`.loreguard/architecture.json`. Because it only changes when the architecture
+changes, a PR diff — or CI running `loreguard graph --manifest --out
+.loreguard/architecture.json && git diff --exit-code` — turns a removed
+provider edge or a newly-dangling consumer into a reviewable signal. This is
+the git-native change-detection substrate for an estate-wide map (see
+[`ROADMAP.md`](ROADMAP.md)).
 
 **Find the holes — `loreguard graph --gaps`.** The map's most useful warning
 is asymmetry:

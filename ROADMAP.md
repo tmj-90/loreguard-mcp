@@ -35,13 +35,18 @@ architecture map — into single answers.
   FTS `all` match on the contract's meaningful word tokens (HTTP methods /
   short / numeric tokens dropped). Surfaced in the CLI and as
   `applicableLore` in the MCP response. **(done)**
-- [ ] **#2 — Architecture manifest that diffs in PRs.** `graph --json`
-  (already exists) → a committed `.loreguard/architecture.json` so a removed
-  provider edge or a new dangling consumer shows up as a reviewable diff in a
-  pull request. Git-native change detection for the estate.
-- [ ] **#3 — Discovery confidence tiers.** Mark high-signal patterns (route
-  definitions) vs. fuzzier ones (`.publish` on a generic bus) so
-  `boundary review` can fast-path the obvious edges and scrutinise the rest.
+- [x] **#2 — Architecture manifest that diffs in PRs.** `graph --manifest
+  [--out F]` emits a deterministic, **timestamp-free** snapshot
+  (`{schemaVersion, repos, deps, gaps}`) to commit as
+  `.loreguard/architecture.json`. Because it only changes when the graph
+  changes, a PR diff (or CI `git diff --exit-code`) becomes architecture-
+  drift detection. **(done)**
+- [x] **#3 — Discovery confidence tiers.** Each discover rule carries a
+  `confidence`: `high` for unambiguous framework constructs (route defs,
+  `@KafkaListener`), `medium` for generic method names (`.publish`,
+  `.subscribe`). The CLI sorts high-signal first, labels them, and flags the
+  review-tier count so `boundary review` can fast-path the obvious edges.
+  Confidence is recorded in the draft detail. **(done)**
 
 ---
 

@@ -542,6 +542,24 @@ describe("CLI dispatch — quickstart / digest / tags", () => {
     expect(out).toMatch(/Orphan providers[\s\S]*internal-metric/);
   });
 
+  it("graph --manifest emits a deterministic, timestamp-free snapshot", async () => {
+    await run("init");
+    await run("boundary", "add", "orders-svc", "order-submitted", "provides");
+    await run("boundary", "add", "billing-svc", "order-submitted", "consumes");
+    out = "";
+    await run("graph", "--manifest");
+    const first = out;
+    out = "";
+    await run("graph", "--manifest");
+    expect(out).toBe(first); // identical across runs → PR-diffable
+    const parsed = JSON.parse(first);
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.repos).toContain("orders-svc");
+    expect(parsed.deps[0]).toMatchObject({ from: "billing-svc", to: "orders-svc" });
+    // No timestamp field that would churn the diff.
+    expect(first).not.toMatch(/generatedAt|exportedAt|\d{4}-\d{2}-\d{2}T/);
+  });
+
   it("export --html writes a self-contained page with records and the graph", async () => {
     await run("init");
     await run("add", "--title", "Argon2id default", "--summary", "s", "--body", "b", "--repo", "orders-svc");

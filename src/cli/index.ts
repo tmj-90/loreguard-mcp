@@ -229,13 +229,17 @@ COMMANDS
                             (depends on) it. The consumers are the blast
                             radius of a shape change. Reads the map
                             aggregated locally + via sync pull.
-  graph [<repo>] [--gaps] [--json] [--include-drafts]
+  graph [<repo>] [--gaps] [--manifest] [--out F] [--json] [--include-drafts]
                             Repo-level architecture graph from boundary
                             edges. No arg: the whole dependency map. With
                             a repo: its full multi-hop upstream (what it
                             depends on) and downstream (the blast radius).
                             --gaps: contracts consumed with no provider
                             (and provided with no consumer) — map holes.
+                            --manifest: a deterministic, timestamp-free
+                            JSON snapshot to commit (e.g.
+                            .loreguard/architecture.json) so architecture
+                            drift shows up as a PR diff.
   discover [<path>] [--repo N] [--write] [--json]
                             Scan source for contract signals (HTTP routes,
                             pub/sub topics, queue consumers) and propose
@@ -1061,9 +1065,17 @@ async function cmdDiscover(args: ReturnType<typeof parseArgs>): Promise<number> 
           ? `  ↔ ${e.role === "consumes" ? "provided by" : "consumed by"} ${counterparts.join(", ")}`
           : "";
       if (counterparts.length > 0) connections++;
+      const conf = e.confidence === "high" ? "high-signal" : "review";
       process.stdout.write(
-        `  ${repo} ${arrow} ${e.contract}  [${e.kind}, ${e.occurrences}×]${link}\n` +
+        `  ${repo} ${arrow} ${e.contract}  [${e.kind}, ${conf}, ${e.occurrences}×]${link}\n` +
           `    evidence: ${e.evidence.join(", ")}\n`,
+      );
+    }
+    const lowConf = edges.filter((e) => e.confidence === "medium").length;
+    if (lowConf > 0) {
+      process.stdout.write(
+        `\n${lowConf} candidate(s) are 'review' tier (generic publish/subscribe ` +
+          "patterns) — confirm these against the code before trusting them.\n",
       );
     }
     if (connections > 0) {
@@ -1088,7 +1100,7 @@ async function cmdDiscover(args: ReturnType<typeof parseArgs>): Promise<number> 
         contract: e.contract,
         role: e.role,
         kind: e.kind,
-        detail: `auto-discovered (${e.occurrences}×): ${e.evidence.join(", ")}`,
+        detail: `auto-discovered (${e.confidence}-signal, ${e.occurrences}×): ${e.evidence.join(", ")}`,
         author: "discover",
       });
       created++;
@@ -1106,9 +1118,36 @@ async function cmdGraph(args: ReturnType<typeof parseArgs>): Promise<number> {
   const includeDrafts = getBool(args.flags, "include-drafts");
   const wantsJson = getBool(args.flags, "json");
   const gaps = getBool(args.flags, "gaps");
+  const manifest = getBool(args.flags, "manifest");
   const repo = args.positionals[0];
   const db = openDb();
   try {
+    if (manifest) {
+      // A deterministic, TIMESTAMP-FREE snapshot of the architecture, meant
+      // to be committed (e.g. .loreguard/architecture.json). Because it only
+      // changes when the graph changes, a PR diff or a CI `git diff
+      // --exit-code` becomes architecture-drift detection: a removed provider
+      // edge or a newly-dangling consumer shows up as a reviewable change.
+      const g = buildRepoGraph(db, { includeDrafts });
+      const { danglingConsumers, orphanProviders } = analyzeConnections(db, {
+        includeDrafts,
+      });
+      const payload = {
+        schemaVersion: 1,
+        repos: g.repos,
+        deps: g.deps,
+        gaps: { danglingConsumers, orphanProviders },
+      };
+      const json = JSON.stringify(payload, null, 2) + "\n";
+      const outPath = getString(args.flags, "out");
+      if (outPath) {
+        writeFileSync(outPath, json, { encoding: "utf8" });
+        process.stdout.write(`loreguard: wrote architecture manifest to ${outPath}\n`);
+      } else {
+        process.stdout.write(json);
+      }
+      return 0;
+    }
     if (gaps) {
       const analysis = analyzeConnections(db, { includeDrafts });
       if (wantsJson) {

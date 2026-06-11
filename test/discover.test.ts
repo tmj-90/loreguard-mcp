@@ -45,6 +45,13 @@ describe("core/discover — scanText (pure)", () => {
     const sigs = scanText('// header\n\napp.get("/x", h)');
     expect(sigs[0]!.line).toBe(3);
   });
+
+  it("tags route defs / @KafkaListener as high-signal, generic pub/sub as medium", () => {
+    expect(scanText('app.get("/x", h)')[0]!.confidence).toBe("high");
+    expect(scanText('@KafkaListener(topics = "t")')[0]!.confidence).toBe("high");
+    expect(scanText('bus.publish("e", x)')[0]!.confidence).toBe("medium");
+    expect(scanText('c.subscribe("e")')[0]!.confidence).toBe("medium");
+  });
 });
 
 describe("core/discover — discoverEdges (filesystem)", () => {
@@ -64,6 +71,14 @@ describe("core/discover — discoverEdges (filesystem)", () => {
     expect(orders?.occurrences).toBe(2);
     expect(orders?.evidence.length).toBe(2);
     expect(edges.some((e) => e.role === "consumes" && e.contract === "rollup")).toBe(true);
+  });
+
+  it("ranks high-confidence edges first and carries the confidence through", () => {
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "a.ts"), 'bus.publish("evt", x)\napp.get("/x", h)');
+    const edges = discoverEdges(dir);
+    expect(edges[0]!.confidence).toBe("high"); // the route sorts first
+    expect(edges.find((e) => e.contract === "evt")?.confidence).toBe("medium");
   });
 
   it("skips node_modules and non-source files", () => {

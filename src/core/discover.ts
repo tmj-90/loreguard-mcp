@@ -36,9 +36,19 @@ const SKIP_DIRS: ReadonlySet<string> = new Set([
 
 export type ContractKind = "endpoint" | "event" | "queue";
 
+/**
+ * How much to trust a detection. `high` = an unambiguous framework construct
+ * (a route definition, an `@KafkaListener`) that's almost never a false
+ * positive; `medium` = a generic method name (`.publish`, `.subscribe`) that
+ * usually means what we think but can misfire. The CLI fast-paths `high` and
+ * flags `medium` for closer review.
+ */
+export type SignalConfidence = "high" | "medium";
+
 export interface RawSignal {
   readonly role: BoundaryRole;
   readonly kind: ContractKind;
+  readonly confidence: SignalConfidence;
   /** Contract string as detected (un-normalised). */
   readonly contract: string;
   /** 1-based line number within the scanned text. */
@@ -48,6 +58,7 @@ export interface RawSignal {
 interface Rule {
   readonly role: BoundaryRole;
   readonly kind: ContractKind;
+  readonly confidence: SignalConfidence;
   readonly re: RegExp;
   /** Build the contract string from the regex match groups. */
   readonly build: (m: RegExpMatchArray) => string | null;
@@ -59,6 +70,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     role: "provides",
     kind: "endpoint",
+    confidence: "high",
     re: /\b(?:app|router|fastify|server|api|route|bp|blueprint)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/gi,
     build: (m) => `${m[1]!.toUpperCase()} ${m[2]!}`,
   },
@@ -66,6 +78,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     role: "provides",
     kind: "endpoint",
+    confidence: "high",
     re: /@(Get|Post|Put|Patch|Delete)(?:Mapping)?\s*\(\s*(?:value\s*=\s*)?['"]([^'"]*)['"]/g,
     build: (m) => `${m[1]!.toUpperCase()} ${m[2]! || "/"}`,
   },
@@ -73,14 +86,17 @@ const RULES: ReadonlyArray<Rule> = [
   {
     role: "provides",
     kind: "endpoint",
+    confidence: "high",
     re: /@(?:app|bp|blueprint|router)\.route\s*\(\s*['"]([^'"]+)['"]/g,
     build: (m) => m[1]!,
   },
   // ── Pub/sub events ─────────────────────────────────────────────────
-  // .publish("topic") — Redis, Kafka wrappers, generic buses (this repo PROVIDES)
+  // .publish("topic") — Redis, Kafka wrappers, generic buses (this repo
+  // PROVIDES). Generic method name → medium confidence.
   {
     role: "provides",
     kind: "event",
+    confidence: "medium",
     re: /\.publish\s*\(\s*['"`]([^'"`]+)['"`]/g,
     build: (m) => m[1]!,
   },
@@ -88,6 +104,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     role: "provides",
     kind: "event",
+    confidence: "medium",
     re: /\.send\s*\(\s*\{[^}]*\btopic\s*:\s*['"]([^'"]+)['"]/g,
     build: (m) => m[1]!,
   },
@@ -96,13 +113,16 @@ const RULES: ReadonlyArray<Rule> = [
   {
     role: "consumes",
     kind: "event",
+    confidence: "medium",
     re: /\.subscribe\s*\(\s*['"`]([^'"`]+)['"`]/g,
     build: (m) => m[1]!,
   },
-  // Spring @KafkaListener(topics = "order-submitted") (CONSUMES)
+  // Spring @KafkaListener(topics = "order-submitted") (CONSUMES) — explicit
+  // framework annotation → high confidence.
   {
     role: "consumes",
     kind: "event",
+    confidence: "high",
     re: /@KafkaListener\s*\([^)]*topics?\s*=\s*\{?\s*['"]([^'"]+)['"]/g,
     build: (m) => m[1]!,
   },
@@ -111,6 +131,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     role: "consumes",
     kind: "queue",
+    confidence: "medium",
     re: /\.consume\s*\(\s*['"`]([^'"`]+)['"`]/g,
     build: (m) => m[1]!,
   },
@@ -148,6 +169,7 @@ export function scanText(text: string): RawSignal[] {
       out.push({
         role: rule.role,
         kind: rule.kind,
+        confidence: rule.confidence,
         contract: contract.trim(),
         line: lineAt(m.index),
       });
@@ -159,6 +181,8 @@ export function scanText(text: string): RawSignal[] {
 export interface DiscoveredEdge {
   readonly role: BoundaryRole;
   readonly kind: ContractKind;
+  /** Highest confidence among the signals that produced this edge. */
+  readonly confidence: SignalConfidence;
   /** Contract as detected (the dedupe key normalises separately). */
   readonly contract: string;
   /** How many times the signal was seen across the repo. */
@@ -189,6 +213,7 @@ export function discoverEdges(rootDir: string): DiscoveredEdge[] {
     {
       role: BoundaryRole;
       kind: ContractKind;
+      confidence: SignalConfidence;
       contract: string;
       occurrences: number;
       evidence: string[];
@@ -227,12 +252,15 @@ export function discoverEdges(rootDir: string): DiscoveredEdge[] {
           e = {
             role: sig.role,
             kind: sig.kind,
+            confidence: sig.confidence,
             contract: sig.contract,
             occurrences: 0,
             evidence: [],
           };
           agg.set(key, e);
         }
+        // The same contract seen via a high-confidence rule anywhere wins.
+        if (sig.confidence === "high") e.confidence = "high";
         e.occurrences++;
         if (e.evidence.length < MAX_EVIDENCE) {
           e.evidence.push(`${rel}:${sig.line}`);
@@ -242,8 +270,10 @@ export function discoverEdges(rootDir: string): DiscoveredEdge[] {
   };
   walk(rootDir);
 
+  const rank = (c: SignalConfidence): number => (c === "high" ? 0 : 1);
   return Array.from(agg.values()).sort(
     (a, b) =>
+      rank(a.confidence) - rank(b.confidence) ||
       a.role.localeCompare(b.role) ||
       a.kind.localeCompare(b.kind) ||
       a.contract.localeCompare(b.contract),
