@@ -18,6 +18,7 @@ import {
   nearDuplicateTags,
   pruneReadEvents,
   rejectLore,
+  relatedLore,
   renameTag,
   searchLore,
   searchLoreCount,
@@ -564,6 +565,61 @@ describe("core/lore", () => {
       expect(() => searchLore(db, { query: 'password" hashing' })).not.toThrow();
       const hits = searchLore(db, { query: 'password" hashing' });
       expect(hits.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("relatedLore — lore ↔ contract bridge", () => {
+    it("matches a record tagged with the contract name", () => {
+      const tagged = addLore(db, {
+        title: "order-submitted must carry a timezone offset",
+        summary: "naive timestamps caused INC-411",
+        body: "b",
+        tags: ["order-submitted"],
+      });
+      addLore(db, { title: "Unrelated cache policy", summary: "ttl 60s", body: "b" });
+      const hits = relatedLore(db, "order-submitted");
+      expect(hits.map((h) => h.id)).toContain(tagged.id);
+      expect(hits.map((h) => h.title)).not.toContain("Unrelated cache policy");
+    });
+
+    it("matches on contract word tokens, requiring all of them (precision)", () => {
+      const rule = addLore(db, {
+        title: "Daily rollup runs at 02:00 UTC",
+        summary: "the daily rollup job is timezone-sensitive",
+        body: "b",
+      });
+      // A record mentioning only one token must NOT be pulled in.
+      addLore(db, { title: "Daily standup notes", summary: "team sync", body: "b" });
+      const hits = relatedLore(db, "daily-rollup");
+      expect(hits.map((h) => h.id)).toContain(rule.id);
+      expect(hits.map((h) => h.title)).not.toContain("Daily standup notes");
+    });
+
+    it("drops HTTP method + short/numeric tokens from an endpoint contract", () => {
+      const rule = addLore(db, {
+        title: "Orders endpoint is paginated",
+        summary: "orders list caps at 100 per page",
+        body: "b",
+      });
+      // "GET /orders/:id" → only "orders" is a meaningful term.
+      const hits = relatedLore(db, "GET /orders/:id");
+      expect(hits.map((h) => h.id)).toContain(rule.id);
+    });
+
+    it("dedupes tag and text matches, and honours the limit", () => {
+      const r = addLore(db, {
+        title: "payments rule",
+        summary: "payments must be idempotent",
+        body: "b",
+        tags: ["payments"],
+      });
+      const hits = relatedLore(db, "payments", { limit: 5 });
+      expect(hits.filter((h) => h.id === r.id)).toHaveLength(1);
+    });
+
+    it("returns empty when nothing matches", () => {
+      addLore(db, { title: "totally unrelated", summary: "nope", body: "b" });
+      expect(relatedLore(db, "nonexistent-contract")).toEqual([]);
     });
   });
 

@@ -9,6 +9,7 @@ import { findDependents, suggestBoundary } from "../core/boundaries.js";
 import {
   findPossibleDuplicates,
   getLore,
+  relatedLore,
   reportConflict,
   ReportConflictError,
   searchLore,
@@ -1064,6 +1065,9 @@ export function buildMcpServer(db: Database): McpServer {
       }
       try {
         const result = findDependents(db, args.contract as string);
+        // The rules that govern this contract — so the agent gets blast
+        // radius AND the policy to respect in one call.
+        const rules = relatedLore(db, args.contract as string, { limit: 5 });
         audit({
           tool: "find_dependents",
           request: args as Record<string, unknown>,
@@ -1079,6 +1083,14 @@ export function buildMcpServer(db: Database): McpServer {
                   contract: result.contract,
                   providers: result.providers.map(boundaryForMcp),
                   consumers: result.consumers.map(boundaryForMcp),
+                  applicableLore: rules.map((l) => ({
+                    id: l.id,
+                    title: l.title,
+                    summary: l.summary,
+                    confidence: l.confidence,
+                    stale: l.stale,
+                    source: l.source,
+                  })),
                   next:
                     result.providers.length === 0 &&
                     result.consumers.length === 0
@@ -1088,7 +1100,8 @@ export function buildMcpServer(db: Database): McpServer {
                         "call declare_boundary to record it."
                       : "These are the declared cross-repo dependents. Treat " +
                         "`consumers` as the blast radius of a shape change and " +
-                        "coordinate accordingly.",
+                        "coordinate accordingly. Read `applicableLore` for the " +
+                        "team rules that govern this contract before changing it.",
                 },
                 null,
                 2,

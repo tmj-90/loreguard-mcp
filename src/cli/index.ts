@@ -38,6 +38,7 @@ import {
   nearDuplicateTags,
   pruneReadEvents,
   rejectLore,
+  relatedLore,
   renameTag,
   searchLore,
   searchLoreCount,
@@ -2013,6 +2014,18 @@ async function cmdImpact(args: ReturnType<typeof parseArgs>): Promise<number> {
       process.stdout.write("  (none declared)\n");
     } else {
       for (const b of r.consumers) process.stdout.write(renderBoundary(b) + "\n");
+    }
+    // Applicable lore: the rules that govern this contract, so "who's
+    // affected?" comes with "what must I respect?" in the same answer.
+    const rules = relatedLore(db, contract, { limit: 5 });
+    process.stdout.write(`\nApplicable lore (rules for this contract): ${rules.length}\n`);
+    if (rules.length === 0) {
+      process.stdout.write("  (none found — search `loreguard search` for related records)\n");
+    } else {
+      for (const l of rules) {
+        const staleTag = l.stale ? " [stale]" : "";
+        process.stdout.write(`  ${l.id}  ${l.title}${staleTag}\n    ${l.summary}\n`);
+      }
     }
     if (r.providers.length === 0 && r.consumers.length === 0) {
       process.stdout.write(

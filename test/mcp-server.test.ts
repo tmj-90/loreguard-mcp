@@ -418,6 +418,26 @@ describe("MCP — find_dependents + declare_boundary", () => {
     expect(json.consumers.map((b: any) => b.repo)).toEqual(["reporting-svc"]);
   });
 
+  it("find_dependents returns applicableLore — the rules governing the contract", async () => {
+    addBoundary(db, { repo: "orders-svc", contract: "order-submitted", role: "provides" });
+    addLore(db, {
+      title: "order-submitted must carry a timezone offset",
+      summary: "naive timestamps on order events caused INC-411",
+      body: "Always ISO-8601 with offset.",
+      tags: ["order-submitted"],
+      source: "https://example.com/inc/411",
+      confidence: "high",
+    });
+    client = await connectClient(db);
+    const { json } = await callJson(client, "find_dependents", {
+      contract: "order-submitted",
+    });
+    expect(Array.isArray(json.applicableLore)).toBe(true);
+    expect(json.applicableLore.length).toBeGreaterThan(0);
+    expect(json.applicableLore[0].title).toMatch(/timezone offset/);
+    expect(json.next).toMatch(/applicableLore/);
+  });
+
   it("find_dependents on an unknown contract returns empty + a not-proof-of-safety nudge", async () => {
     client = await connectClient(db);
     const { json } = await callJson(client, "find_dependents", { contract: "nope" });

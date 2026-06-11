@@ -28,12 +28,13 @@ product tier, not a ticket.
 These three fuse the two halves of the product — curated memory and the
 architecture map — into single answers.
 
-- [ ] **#1 — Link lore ↔ contracts.** `impact <contract>` /
-  `find_dependents` should return not just *who's affected* but *the rules
-  that apply* to that contract (e.g. the "API dates need timezone offsets"
-  record next to `order-submitted`). No new schema — match via tags + FTS on
-  the contract name. This is the conceptual payoff of having built both
-  halves. **(started)**
+- [x] **#1 — Link lore ↔ contracts.** `impact <contract>` /
+  `find_dependents` now return not just *who's affected* but *the rules that
+  apply* to that contract (e.g. the "order-submitted must carry a timezone
+  offset" record). No new schema — `relatedLore` matches via tag link + an
+  FTS `all` match on the contract's meaningful word tokens (HTTP methods /
+  short / numeric tokens dropped). Surfaced in the CLI and as
+  `applicableLore` in the MCP response. **(done)**
 - [ ] **#2 — Architecture manifest that diffs in PRs.** `graph --json`
   (already exists) → a committed `.loreguard/architecture.json` so a removed
   provider edge or a new dangling consumer shows up as a reviewable diff in a

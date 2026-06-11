@@ -822,6 +822,22 @@ contract and `declare_boundary` when it discovers a producer/consumer
 relationship that isn't on the map yet. An empty `impact` result is not
 proof a change is safe — only that the map doesn't cover it yet.
 
+**The map answers "who's affected?" *and* "what must I respect?"** Both
+`loreguard impact <contract>` and the `find_dependents` MCP tool return an
+**applicable-lore** list alongside the providers/consumers — the team rules
+that govern that contract, matched by tag link and a precise word-token
+search (so `order-submitted` surfaces the "must carry a timezone offset"
+record but not every record that merely mentions "orders"):
+
+```
+Applicable lore (rules for this contract): 1
+  rhzcnx29  order-submitted must include a timezone offset
+    naive timestamps on order events caused INC-411
+```
+
+This is the point where the two halves of loreguard fuse: the blast radius
+(architecture) and the policy (curated memory) come back in one answer.
+
 **Repo-level, multi-hop view — `loreguard graph`.** `impact` answers one
 hop (direct providers/consumers of one contract). `graph` lifts the edges
 into a repo dependency graph and walks it transitively:

@@ -1309,6 +1309,72 @@ export function searchLore(
   return annotatePossibleConflicts(summaries);
 }
 
+const HTTP_METHOD_TOKENS = new Set([
+  "get", "post", "put", "patch", "delete", "head", "options",
+]);
+
+/**
+ * Lore records that apply to a contract — the bridge between the curated
+ * memory and the architecture map. Given a contract name (`order-submitted`,
+ * `GET /orders/:id`), return the active records most likely to be the *rules*
+ * for it, so `impact` / `find_dependents` can answer "who's affected?" AND
+ * "what must I respect?" in one shot.
+ *
+ * No new schema — two cheap signals, tag match first (a record tagged with
+ * the contract is an explicit link), then an FTS match on the contract's
+ * meaningful word tokens with `all` (precision: a record must mention every
+ * token, so `order-submitted` doesn't drag in every record about "orders").
+ * HTTP-method words, sub-3-char tokens, and pure numbers are dropped as
+ * noise. Deduped, tag matches ranked ahead of text matches, capped.
+ */
+export function relatedLore(
+  db: Database,
+  contract: string,
+  opts: { limit?: number; includeRestricted?: boolean } = {},
+): LoreSummary[] {
+  const limit = opts.limit ?? 5;
+  const seen = new Set<string>();
+  const out: LoreSummary[] = [];
+  const take = (hits: LoreSummary[]): void => {
+    for (const h of hits) {
+      if (out.length >= limit) break;
+      if (seen.has(h.id)) continue;
+      seen.add(h.id);
+      out.push(h);
+    }
+  };
+  // 1. Explicit link: a record tagged with the contract name.
+  take(
+    searchLore(db, {
+      tag: contract,
+      limit,
+      includeRestricted: opts.includeRestricted,
+    }),
+  );
+  // 2. Text match on the contract's meaningful tokens (precision via `all`).
+  const terms = contract
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(
+      (t) =>
+        t.length >= 3 &&
+        !HTTP_METHOD_TOKENS.has(t.toLowerCase()) &&
+        !/^\d+$/.test(t),
+    );
+  if (terms.length > 0 && out.length < limit) {
+    take(
+      searchLore(db, {
+        query: terms.join(" "),
+        match: "all",
+        limit,
+        includeRestricted: opts.includeRestricted,
+      }),
+    );
+  }
+  return out;
+}
+
 /**
  * Pairwise overlap detection within a single search response.
  *
