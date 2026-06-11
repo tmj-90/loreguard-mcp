@@ -8,7 +8,7 @@
  * and capture writes by patching process.stdout / process.stderr. Each
  * test gets its own DB via LOREGUARD_DB; audit + telemetry are silenced.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -499,6 +499,27 @@ describe("CLI dispatch — quickstart / digest / tags", () => {
     expect(out).toMatch(/Downstream.*: 2/s);
     // finance-svc is reached transitively through reporting-svc.
     expect(out).toMatch(/orders-svc → reporting-svc → finance-svc/);
+  });
+
+  it("discover is dry-run by default and writes drafts with --write", async () => {
+    await run("init");
+    writeFileSync(join(dir, "routes.ts"), 'app.get("/orders/:id", h)\nbus.publish("order-submitted", x)');
+    // Dry run: reports candidates, writes nothing.
+    out = "";
+    expect(await run("discover", dir, "--repo", "orders-svc")).toBe(0);
+    expect(out).toMatch(/dry run/);
+    expect(out).toMatch(/provides order-submitted/);
+    out = "";
+    expect(await run("boundary", "list", "--include-drafts")).toBe(0);
+    expect(out).not.toContain("order-submitted");
+    // --write: candidates become draft edges in the review queue.
+    out = "";
+    expect(await run("discover", dir, "--repo", "orders-svc", "--write")).toBe(0);
+    expect(out).toMatch(/Wrote 2 draft edge/);
+    out = "";
+    await run("boundary", "list", "--include-drafts");
+    expect(out).toContain("order-submitted");
+    expect(out).toMatch(/\[draft\]/);
   });
 
   it("export --html writes a self-contained page with records and the graph", async () => {

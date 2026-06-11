@@ -258,6 +258,12 @@ cross-repo impact map.
 - Don't invent edges. Only declare integration points you actually saw
   in code/config (publish calls, route definitions, client calls, schema
   references). Cite the evidence in `detail` or `source`.
+- **Shortcut:** run `loreguard discover` in the repo first. It statically
+  scans for HTTP routes, pub/sub topics, and queue consumers and prints
+  candidate edges with `file:line` evidence (dry-run; `--write` lands them
+  as drafts). Treat its output as a checklist to verify against the code —
+  not as truth. Confirm each one, drop the false positives, and add any
+  integration points it missed (it only covers common patterns).
 
 This is how the "change this contract, what does it affect?" query gets
 populated — one onboarding at a time, per repo, aggregated via `sync`.

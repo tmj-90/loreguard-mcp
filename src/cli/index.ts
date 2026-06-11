@@ -45,6 +45,7 @@ import {
   updateLore,
   verifyLore,
 } from "../core/lore.js";
+import { discoverEdges } from "../core/discover.js";
 import { buildRepoGraph, downstreamRepos, upstreamRepos } from "../core/graph.js";
 import { scanLoreFields } from "../core/secrets.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
@@ -230,6 +231,11 @@ COMMANDS
                             edges. No arg: the whole dependency map. With
                             a repo: its full multi-hop upstream (what it
                             depends on) and downstream (the blast radius).
+  discover [<path>] [--repo N] [--write] [--json]
+                            Scan source for contract signals (HTTP routes,
+                            pub/sub topics, queue consumers) and propose
+                            boundary edges. Dry-run by default; --write
+                            adds them as DRAFTS for 'boundary review'.
   boundary <sub> ...        Manage cross-repo interaction edges:
                             add <repo> <contract> <provides|consumes>
                               [--kind K --detail "..." --source URL]
@@ -981,6 +987,80 @@ async function cmdRepos(): Promise<number> {
       return 0;
     }
     process.stdout.write(rs.join("\n") + "\n");
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdDiscover(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const path = args.positionals[0] ?? ".";
+  const wantsJson = getBool(args.flags, "json");
+  const write = getBool(args.flags, "write");
+  // Repo name: explicit flag wins, else autodetect from git remote / cwd.
+  const repoFlag = getString(args.flags, "repo");
+  const detected = detectRepoName();
+  const repo = repoFlag ?? detected?.name;
+  if (!repo) {
+    process.stderr.write(
+      "loreguard: could not determine a repo name — pass --repo <name>\n",
+    );
+    return 2;
+  }
+
+  const edges = discoverEdges(path);
+  if (wantsJson) {
+    process.stdout.write(JSON.stringify({ repo, edges }, null, 2) + "\n");
+    return 0;
+  }
+  if (edges.length === 0) {
+    process.stdout.write(
+      `loreguard discover: no contract signals found under ${path}.\n` +
+        "  (Coverage is a curated subset — HTTP routes, pub/sub topics, queue\n" +
+        "  consumers — for JS/TS, Python, and JVM. Declare edges by hand with\n" +
+        "  `loreguard boundary add` if your stack isn't covered.)\n",
+    );
+    return 0;
+  }
+
+  process.stdout.write(
+    `loreguard discover: ${edges.length} candidate edge(s) for '${repo}'` +
+      (write ? "" : " (dry run — nothing written)") +
+      "\n\n",
+  );
+  for (const e of edges) {
+    const arrow = e.role === "provides" ? "provides" : "consumes";
+    process.stdout.write(
+      `  ${repo} ${arrow} ${e.contract}  [${e.kind}, ${e.occurrences}×]\n` +
+        `    evidence: ${e.evidence.join(", ")}\n`,
+    );
+  }
+
+  if (!write) {
+    process.stdout.write(
+      "\nThese are candidates, not facts. Re-run with --write to add them as\n" +
+        "DRAFT edges, then ratify with `loreguard boundary review`.\n",
+    );
+    return 0;
+  }
+
+  const db = openDb();
+  try {
+    let created = 0;
+    for (const e of edges) {
+      suggestBoundary(db, {
+        repo,
+        contract: e.contract,
+        role: e.role,
+        kind: e.kind,
+        detail: `auto-discovered (${e.occurrences}×): ${e.evidence.join(", ")}`,
+        author: "discover",
+      });
+      created++;
+    }
+    process.stdout.write(
+      `\nWrote ${created} draft edge(s). Review them:\n  loreguard boundary review\n`,
+    );
     return 0;
   } finally {
     db.close();
@@ -2428,6 +2508,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdImpact(parsed);
       case "graph":
         return await cmdGraph(parsed);
+      case "discover":
+        return await cmdDiscover(parsed);
       case "boundary":
         return await cmdBoundary(parsed);
       case "hooks":

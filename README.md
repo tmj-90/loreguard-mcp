@@ -840,6 +840,26 @@ loreguard graph orders-svc      # one repo's full blast radius
 consumes `reporting-svc`'s rollups, which depend on it. That transitive
 reach is the "what actually breaks" answer a one-hop check can't give.
 
+**Bootstrap the map — `loreguard discover`.** Hand-declaring every edge is
+the tax that keeps the map empty, so `discover` statically scans a repo's
+source for high-signal contract patterns — HTTP routes (provides), pub/sub
+topics (publish = provides, subscribe = consumes), queue consumers — and
+proposes edges with `file:line` evidence:
+
+```bash
+loreguard discover                  # dry-run: list candidates, write nothing
+loreguard discover --write          # add them as DRAFTS for review
+loreguard boundary review           # ratify / reject, same gate as always
+```
+
+It **proposes, it doesn't decide**: candidates land as drafts and go through
+the normal review gate — never auto-activated. Coverage is a deliberately
+curated, low-false-positive subset (JS/TS, Python, JVM, common libraries),
+not an exhaustive parser; treat the output as a checklist to verify against
+the code, and hand-declare anything your stack hides. This is the
+mechanical-grep half of mapping; human (or onboard-agent) judgement is still
+the ratifying half.
+
 ### A browsable, committable view — `loreguard export --html`
 
 `loreguard export --html --out docs/lore.html` writes a **single
