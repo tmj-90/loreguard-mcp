@@ -59,6 +59,45 @@ At the end of the task, call \`suggest_lore\` only if you discovered a
 reusable convention, gotcha, decision, or service-specific rule that
 would help future agents. Do not save temporary task state or speculation.`;
 
-export function renderClaudeInstructions(): string {
+/**
+ * Which agent client the rule is being emitted for. The *content* of the
+ * retrieval rule is identical everywhere — only the file it belongs in and
+ * the framing differ. The MCP tools (`search_lore`, etc.) are the same over
+ * stdio regardless of client.
+ *
+ *   - claude   → append to CLAUDE.md (raw, default; back-compat).
+ *   - cursor   → a `.cursor/rules/loreguard.mdc` file (frontmatter + body).
+ *   - windsurf → append to `.windsurfrules` (raw body).
+ *   - generic  → raw body for any other agent's rules file.
+ */
+export type InstructionsFormat = "claude" | "cursor" | "windsurf" | "generic";
+
+export const INSTRUCTIONS_FORMATS: ReadonlyArray<InstructionsFormat> = [
+  "claude",
+  "cursor",
+  "windsurf",
+  "generic",
+];
+
+/**
+ * Render the retrieval rule for a given client. Cursor's modern rules are
+ * `.mdc` files with YAML frontmatter, so that format prepends a small
+ * always-apply header; every other client takes the raw body (you paste it
+ * into CLAUDE.md / .windsurfrules / your skill). Output always ends in a
+ * trailing newline so `>> file` appends cleanly.
+ */
+export function renderClaudeInstructions(
+  format: InstructionsFormat = "claude",
+): string {
+  if (format === "cursor") {
+    const frontmatter = [
+      "---",
+      "description: loreguard — when to retrieve team-ratified lore",
+      "alwaysApply: true",
+      "---",
+      "",
+    ].join("\n");
+    return frontmatter + CLAUDE_INSTRUCTIONS + "\n";
+  }
   return CLAUDE_INSTRUCTIONS + "\n";
 }

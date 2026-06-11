@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLAUDE_INSTRUCTIONS,
+  INSTRUCTIONS_FORMATS,
   renderClaudeInstructions,
 } from "../src/cli/instructions.js";
 
@@ -33,10 +34,32 @@ describe("CLAUDE_INSTRUCTIONS", () => {
 });
 
 describe("renderClaudeInstructions", () => {
-  it("returns the rule with a single trailing newline", () => {
+  it("returns the rule with a single trailing newline (default = claude)", () => {
     const out = renderClaudeInstructions();
     expect(out.startsWith(CLAUDE_INSTRUCTIONS)).toBe(true);
     expect(out.endsWith("\n")).toBe(true);
     expect(out).toBe(CLAUDE_INSTRUCTIONS + "\n");
+  });
+
+  it("claude / windsurf / generic all emit the raw body (only the target file differs)", () => {
+    for (const fmt of ["claude", "windsurf", "generic"] as const) {
+      expect(renderClaudeInstructions(fmt)).toBe(CLAUDE_INSTRUCTIONS + "\n");
+    }
+  });
+
+  it("cursor prepends valid .mdc frontmatter, then the same body", () => {
+    const out = renderClaudeInstructions("cursor");
+    expect(out.startsWith("---\n")).toBe(true);
+    expect(out).toMatch(/alwaysApply: true/);
+    expect(out).toContain(CLAUDE_INSTRUCTIONS);
+    expect(out.endsWith("\n")).toBe(true);
+  });
+
+  it("every advertised format renders without throwing and ends in a newline", () => {
+    for (const fmt of INSTRUCTIONS_FORMATS) {
+      const out = renderClaudeInstructions(fmt);
+      expect(out.endsWith("\n")).toBe(true);
+      expect(out).toContain("search_lore");
+    }
   });
 });

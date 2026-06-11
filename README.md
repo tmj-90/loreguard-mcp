@@ -475,6 +475,12 @@ claude mcp add loreguard node /absolute/path/to/loreguard-mcp/dist/bin/loreguard
 (Substitute your actual clone path. `claude mcp list` will show the
 result.)
 
+**Not on Claude Code?** Loreguard is a plain stdio MCP server — Cursor,
+Windsurf, Continue, and any other MCP client work the same way. See
+[`docs/clients.md`](docs/clients.md) for copy-paste config, and use
+`loreguard print-claude-instructions --format cursor|windsurf|generic`
+to emit the retrieval rule in the right shape for your editor.
+
 Claude sees seven tools:
 
 - `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). Hits are ranked by relevance **adjusted for trust** (sourced / higher-confidence / non-stale records win near-ties). When more records match than were returned, the response carries `truncated: { shown, total, hint }` so the agent narrows rather than assuming the top page is the whole story. When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.

@@ -49,7 +49,11 @@ import { getBool, getString, getStringArray, parseArgs } from "./args.js";
 import { cleanDemo, countLore, seedDemo } from "./demo.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
-import { renderClaudeInstructions } from "./instructions.js";
+import {
+  type InstructionsFormat,
+  INSTRUCTIONS_FORMATS,
+  renderClaudeInstructions,
+} from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
 import {
   addMcpServer,
@@ -229,6 +233,8 @@ COMMANDS
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
                             agent reliably calls search_lore.
+                            --format claude|cursor|windsurf|generic
+                            tailors it (cursor emits a .mdc rule file).
   mcp                       Run the MCP server on stdio (same as loreguard-mcp).
 
 EXAMPLES
@@ -2197,9 +2203,19 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":
-      case "instructions":
-        process.stdout.write(renderClaudeInstructions());
+      case "instructions": {
+        const fmt = getString(parsed.flags, "format") ?? "claude";
+        if (!INSTRUCTIONS_FORMATS.includes(fmt as InstructionsFormat)) {
+          process.stderr.write(
+            `loreguard: --format must be one of: ${INSTRUCTIONS_FORMATS.join(", ")}\n`,
+          );
+          return 2;
+        }
+        process.stdout.write(
+          renderClaudeInstructions(fmt as InstructionsFormat),
+        );
         return 0;
+      }
       case "mcp":
         {
           const { runMcpServer } = await import("../mcp/server.js");
