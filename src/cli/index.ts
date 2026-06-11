@@ -45,6 +45,7 @@ import {
   updateLore,
   verifyLore,
 } from "../core/lore.js";
+import { buildRepoGraph, downstreamRepos, upstreamRepos } from "../core/graph.js";
 import { scanLoreFields } from "../core/secrets.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
 import { cleanDemo, countLore, seedDemo } from "./demo.js";
@@ -219,6 +220,11 @@ COMMANDS
                             (depends on) it. The consumers are the blast
                             radius of a shape change. Reads the map
                             aggregated locally + via sync pull.
+  graph [<repo>] [--json] [--include-drafts]
+                            Repo-level architecture graph from boundary
+                            edges. No arg: the whole dependency map. With
+                            a repo: its full multi-hop upstream (what it
+                            depends on) and downstream (the blast radius).
   boundary <sub> ...        Manage cross-repo interaction edges:
                             add <repo> <contract> <provides|consumes>
                               [--kind K --detail "..." --source URL]
@@ -970,6 +976,71 @@ async function cmdRepos(): Promise<number> {
       return 0;
     }
     process.stdout.write(rs.join("\n") + "\n");
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdGraph(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const includeDrafts = getBool(args.flags, "include-drafts");
+  const wantsJson = getBool(args.flags, "json");
+  const repo = args.positionals[0];
+  const db = openDb();
+  try {
+    if (repo) {
+      // Per-repo view: full multi-hop upstream + downstream (blast radius).
+      const up = upstreamRepos(db, repo, { includeDrafts });
+      const down = downstreamRepos(db, repo, { includeDrafts });
+      if (wantsJson) {
+        process.stdout.write(
+          JSON.stringify({ repo, upstream: up, downstream: down }, null, 2) + "\n",
+        );
+        return 0;
+      }
+      process.stdout.write(`Architecture graph for '${repo}'\n\n`);
+      process.stdout.write(`Downstream (affected if you change ${repo}): ${down.length}\n`);
+      if (down.length === 0) process.stdout.write("  (nothing depends on it)\n");
+      for (const d of down) {
+        process.stdout.write(`  ${"·".repeat(d.hops)} ${d.repo}  (${d.path.join(" → ")})\n`);
+      }
+      process.stdout.write(`\nUpstream (${repo} depends on): ${up.length}\n`);
+      if (up.length === 0) process.stdout.write("  (depends on nothing)\n");
+      for (const u of up) {
+        process.stdout.write(`  ${"·".repeat(u.hops)} ${u.repo}  (${u.path.join(" → ")})\n`);
+      }
+      return 0;
+    }
+    // Whole-graph view.
+    const g = buildRepoGraph(db, { includeDrafts });
+    if (wantsJson) {
+      process.stdout.write(JSON.stringify(g, null, 2) + "\n");
+      return 0;
+    }
+    if (g.repos.length === 0) {
+      process.stdout.write(
+        "loreguard: no architecture edges yet — declare some with " +
+          "`loreguard boundary add <repo> <contract> provides|consumes`.\n",
+      );
+      return 0;
+    }
+    process.stdout.write(
+      `Architecture graph: ${g.repos.length} repo(s), ${g.deps.length} dependency edge(s)\n\n`,
+    );
+    for (const r of g.repos) {
+      const dependsOn = g.deps.filter((d) => d.from === r);
+      const dependedBy = g.deps.filter((d) => d.to === r);
+      process.stdout.write(`${r}\n`);
+      for (const d of dependsOn) {
+        process.stdout.write(`  → depends on ${d.to}  [${d.contracts.join(", ")}]\n`);
+      }
+      for (const d of dependedBy) {
+        process.stdout.write(`  ← used by    ${d.from}  [${d.contracts.join(", ")}]\n`);
+      }
+      if (dependsOn.length === 0 && dependedBy.length === 0) {
+        process.stdout.write("  (no edges)\n");
+      }
+    }
     return 0;
   } finally {
     db.close();
@@ -2326,6 +2397,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdPrune(parsed);
       case "impact":
         return await cmdImpact(parsed);
+      case "graph":
+        return await cmdGraph(parsed);
       case "boundary":
         return await cmdBoundary(parsed);
       case "hooks":
