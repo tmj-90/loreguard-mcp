@@ -1691,3 +1691,136 @@ export function listRepos(db: Database): string[] {
       .all() as Array<{ repo: string }>
   ).map((r) => r.repo);
 }
+
+/**
+ * Tags with the count of records carrying each, most-used first. Powers
+ * `loreguard tags` so a human can see the shape of the taxonomy (and spot
+ * the singleton typo tag hiding next to a populated one).
+ */
+export function tagCounts(db: Database): Array<{ tag: string; count: number }> {
+  return db
+    .prepare(
+      "SELECT tag, COUNT(*) AS count FROM lore_tags GROUP BY tag ORDER BY count DESC, tag ASC",
+    )
+    .all() as Array<{ tag: string; count: number }>;
+}
+
+/**
+ * Rename a tag everywhere it appears. Both ends are normalised the same
+ * way new tags are (lowercased, whitespace→hyphen), so `tags rename
+ * Security sec` does what you mean. If `to` already exists on a record
+ * that also has `from`, the two collapse into one (no duplicate row) —
+ * this is the merge case. Affected records get their `updated_at` bumped
+ * so the change propagates through `sync`. Tags aren't part of the FTS
+ * index, so no reindex is needed. Returns the number of records touched.
+ */
+export function renameTag(db: Database, from: string, to: string): number {
+  const f = normaliseTag(from);
+  const t = normaliseTag(to);
+  if (!f) throw new Error("renameTag: 'from' tag is empty");
+  if (!t) throw new Error("renameTag: 'to' tag is empty");
+  if (f === t) return 0;
+  const tx = db.transaction(() => {
+    const affected = (
+      db
+        .prepare("SELECT DISTINCT lore_id FROM lore_tags WHERE tag = ?")
+        .all(f) as Array<{ lore_id: string }>
+    ).map((r) => r.lore_id);
+    if (affected.length === 0) return 0;
+    // UPDATE OR IGNORE: rows whose target (lore_id, to) already exists fail
+    // the unique PK and are left untouched as (lore_id, from)…
+    db.prepare("UPDATE OR IGNORE lore_tags SET tag = ? WHERE tag = ?").run(t, f);
+    // …then drop those leftovers, completing the merge.
+    db.prepare("DELETE FROM lore_tags WHERE tag = ?").run(f);
+    const now = nowIso();
+    const bump = db.prepare("UPDATE lore SET updated_at = ? WHERE id = ?");
+    for (const id of affected) bump.run(now, id);
+    return affected.length;
+  });
+  return tx();
+}
+
+/**
+ * Merge several tags into one. Convenience over repeated `renameTag`; the
+ * `into` tag is the survivor. Returns total records touched (a record
+ * carrying two of the merged tags counts once per source tag it had — the
+ * useful "how much did this move" number, not a deduped record count).
+ */
+export function mergeTags(db: Database, froms: string[], into: string): number {
+  let touched = 0;
+  for (const f of froms) touched += renameTag(db, f, into);
+  return touched;
+}
+
+/**
+ * Levenshtein edit distance with an early-exit ceiling. Returns a number
+ * `> max` (not the true distance) once it's certain the distance exceeds
+ * `max` — callers only care about the threshold, not the exact value.
+ */
+function editDistanceWithin(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const v = Math.min(prev[j]! + 1, curr[j - 1]! + 1, prev[j - 1]! + cost);
+      curr.push(v);
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1; // whole row past ceiling — bail
+    prev = curr;
+  }
+  return prev[b.length]!;
+}
+
+/**
+ * Pairs of existing tags within `maxDistance` edits of each other —
+ * likely-typo'd duplicates (`security` / `securty`, `db` / `dbs`) that
+ * silently fragment retrieval. Surfaced by `loreguard doctor`. Each pair
+ * carries both record counts so the human knows which is the stray.
+ * Pairs are emitted once (a < b), most-confusable (smallest distance,
+ * then most-populated) first.
+ */
+export function nearDuplicateTags(
+  db: Database,
+  maxDistance = 2,
+): Array<{ a: string; aCount: number; b: string; bCount: number; distance: number }> {
+  const counts = tagCounts(db);
+  const out: Array<{
+    a: string;
+    aCount: number;
+    b: string;
+    bCount: number;
+    distance: number;
+  }> = [];
+  for (let i = 0; i < counts.length; i++) {
+    for (let j = i + 1; j < counts.length; j++) {
+      const x = counts[i]!;
+      const y = counts[j]!;
+      // Skip trivially-short tags where 1-2 edits is most of the word
+      // ('db' vs 'qa' would otherwise flag) — require the shorter tag to
+      // be at least maxDistance+2 chars to be worth comparing.
+      if (Math.min(x.tag.length, y.tag.length) < maxDistance + 2) continue;
+      const d = editDistanceWithin(x.tag, y.tag, maxDistance);
+      if (d <= maxDistance) {
+        const [a, b] = x.tag < y.tag ? [x, y] : [y, x];
+        out.push({
+          a: a.tag,
+          aCount: a.count,
+          b: b.tag,
+          bCount: b.count,
+          distance: d,
+        });
+      }
+    }
+  }
+  out.sort(
+    (p, q) =>
+      p.distance - q.distance ||
+      q.aCount + q.bCount - (p.aCount + p.bCount) ||
+      p.a.localeCompare(q.a),
+  );
+  return out;
+}

@@ -200,7 +200,34 @@ export async function runDoctor(): Promise<{ exitCode: number; checks: Check[] }
     // have surfaced the real DB issue.
   }
 
-  // 9. Version.
+  // 9. Tag hygiene — near-duplicate tags silently fragment search.
+  try {
+    const db = openDb(dbPath);
+    try {
+      const { nearDuplicateTags } = await import("../core/lore.js");
+      const dupes = nearDuplicateTags(db);
+      if (dupes.length === 0) {
+        checks.push({ label: "Tag hygiene: no near-duplicate tags", level: "ok" });
+      } else {
+        const top = dupes
+          .slice(0, 3)
+          .map((d) => `'${d.a}' (${d.aCount}) ~ '${d.b}' (${d.bCount})`)
+          .join(", ");
+        checks.push({
+          label: `Tag hygiene: ${dupes.length} near-duplicate tag pair(s)`,
+          level: "warn",
+          detail: `Likely typos fragmenting search: ${top}${dupes.length > 3 ? ", …" : ""}.`,
+          fix: "Run `loreguard tags` to review, then `loreguard tags merge <from> <into>`.",
+        });
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Best-effort — a real DB problem is already surfaced above.
+  }
+
+  // 10. Version.
   checks.push({ label: `Version: ${pkgVersion()}`, level: "ok" });
 
   const hasFail = checks.some((c) => c.level === "fail");

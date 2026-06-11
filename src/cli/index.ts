@@ -32,13 +32,16 @@ import {
   listDrafts,
   listRecent,
   listRepos,
-  listTags,
+  mergeTags,
+  nearDuplicateTags,
   pruneReadEvents,
   rejectLore,
+  renameTag,
   searchLore,
   searchLoreCount,
   supersedeLore,
   suggestLore,
+  tagCounts,
   updateLore,
   verifyLore,
 } from "../core/lore.js";
@@ -114,7 +117,10 @@ COMMANDS
                             Edit fields on an existing record. Useful
                             for fixing an agent's draft before approving.
   delete <id>               Hard-delete the record (events row preserved).
-  tags                      Print all distinct tags.
+  tags                      List tags with record counts; flags likely
+                            typo'd near-duplicates. Subcommands:
+                            tags rename <from> <to>,
+                            tags merge <from...> <into>.
   repos                     Print all distinct repos.
   export [--out <path>]     Export lore as a single JSON document
                             (envelope: { schemaVersion, exportedAt,
@@ -853,15 +859,70 @@ async function cmdDelete(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
-async function cmdTags(): Promise<number> {
+async function cmdTags(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
   const db = openDb();
   try {
-    const ts = listTags(db);
-    if (ts.length === 0) {
+    if (sub === "rename") {
+      const [, from, to] = args.positionals;
+      if (!from || !to) {
+        process.stderr.write(
+          "loreguard: tags rename <from> <to> requires both names\n",
+        );
+        return 2;
+      }
+      const n = renameTag(db, from, to);
+      process.stdout.write(
+        n === 0
+          ? `loreguard: no records tagged '${from}' (nothing to rename)\n`
+          : `loreguard: renamed '${from}' → '${to}' on ${n} record(s)\n`,
+      );
+      return 0;
+    }
+    if (sub === "merge") {
+      // tags merge <from...> <into> — last positional is the survivor.
+      const rest = args.positionals.slice(1);
+      if (rest.length < 2) {
+        process.stderr.write(
+          "loreguard: tags merge <from...> <into> needs at least one source and a target\n",
+        );
+        return 2;
+      }
+      const into = rest[rest.length - 1]!;
+      const froms = rest.slice(0, -1);
+      const n = mergeTags(db, froms, into);
+      process.stdout.write(
+        `loreguard: merged ${froms.map((f) => `'${f}'`).join(", ")} → '${into}' (${n} record-tag move(s))\n`,
+      );
+      return 0;
+    }
+    if (sub !== undefined) {
+      process.stderr.write(
+        `loreguard: unknown 'tags' subcommand '${sub}' (try: rename, merge, or no arg to list)\n`,
+      );
+      return 2;
+    }
+    // Default: list tags with record counts, most-used first.
+    const counts = tagCounts(db);
+    if (counts.length === 0) {
       process.stdout.write("loreguard: no tags yet\n");
       return 0;
     }
-    process.stdout.write(ts.join("\n") + "\n");
+    const width = Math.max(...counts.map((c) => String(c.count).length));
+    for (const c of counts) {
+      process.stdout.write(`${String(c.count).padStart(width)}  ${c.tag}\n`);
+    }
+    const dupes = nearDuplicateTags(db);
+    if (dupes.length > 0) {
+      process.stdout.write(
+        `\nloreguard: ${dupes.length} near-duplicate tag pair(s) — likely typos fragmenting search:\n`,
+      );
+      for (const d of dupes) {
+        process.stdout.write(
+          `  '${d.a}' (${d.aCount}) ~ '${d.b}' (${d.bCount})  →  loreguard tags merge ${d.a} ${d.b}\n`,
+        );
+      }
+    }
     return 0;
   } finally {
     db.close();
@@ -2108,7 +2169,7 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
       case "delete":
         return await cmdDelete(parsed);
       case "tags":
-        return await cmdTags();
+        return await cmdTags(parsed);
       case "repos":
         return await cmdRepos();
       case "audit":

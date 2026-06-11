@@ -14,12 +14,16 @@ import {
   listRecent,
   listRepos,
   listTags,
+  mergeTags,
+  nearDuplicateTags,
   pruneReadEvents,
   rejectLore,
+  renameTag,
   searchLore,
   searchLoreCount,
   supersedeLore,
   suggestLore,
+  tagCounts,
   trustRankAdjustment,
   updateLore,
   verifyLore,
@@ -1772,6 +1776,75 @@ describe("core/lore", () => {
       expect(titles).toContain("draft one");
       expect(titles).toContain("to deprecate");
       expect(all.find((l) => l.id === drafted.id)?.status).toBe("draft");
+    });
+  });
+
+  describe("tag hygiene — counts, rename, merge, near-duplicates", () => {
+    it("tagCounts returns per-tag record counts, most-used first", () => {
+      addLore(db, { title: "a", summary: "s", body: "b", tags: ["security", "db"] });
+      addLore(db, { title: "b", summary: "s", body: "b", tags: ["security"] });
+      const counts = tagCounts(db);
+      expect(counts[0]).toEqual({ tag: "security", count: 2 });
+      expect(counts.find((c) => c.tag === "db")).toEqual({ tag: "db", count: 1 });
+    });
+
+    it("renameTag re-points every record and bumps updated_at", () => {
+      const a = addLore(db, { title: "a", summary: "s", body: "b", tags: ["securty"] });
+      const before = getLore(db, a.id)!.updatedAt;
+      const n = renameTag(db, "securty", "security");
+      expect(n).toBe(1);
+      expect(listTags(db)).toContain("security");
+      expect(listTags(db)).not.toContain("securty");
+      expect(searchLore(db, { tag: "security" }).map((h) => h.id)).toContain(a.id);
+      expect(getLore(db, a.id)!.updatedAt >= before).toBe(true);
+    });
+
+    it("renameTag normalises both ends (case / whitespace)", () => {
+      addLore(db, { title: "a", summary: "s", body: "b", tags: ["api"] });
+      renameTag(db, "API", "Public API");
+      expect(listTags(db)).toContain("public-api");
+    });
+
+    it("renameTag collapses into an existing tag without a duplicate row (merge case)", () => {
+      const a = addLore(db, {
+        title: "a",
+        summary: "s",
+        body: "b",
+        tags: ["security", "sec"],
+      });
+      renameTag(db, "sec", "security");
+      const tags = getLore(db, a.id)!.tags;
+      expect(tags.filter((t) => t === "security")).toHaveLength(1);
+      expect(tags).not.toContain("sec");
+    });
+
+    it("renameTag on an absent tag is a no-op returning 0", () => {
+      expect(renameTag(db, "nonexistent", "whatever")).toBe(0);
+    });
+
+    it("mergeTags folds several sources into one survivor", () => {
+      addLore(db, { title: "a", summary: "s", body: "b", tags: ["sec"] });
+      addLore(db, { title: "b", summary: "s", body: "b", tags: ["secrty"] });
+      addLore(db, { title: "c", summary: "s", body: "b", tags: ["security"] });
+      mergeTags(db, ["sec", "secrty"], "security");
+      expect(listTags(db).filter((t) => t.startsWith("sec"))).toEqual(["security"]);
+      expect(tagCounts(db).find((c) => c.tag === "security")!.count).toBe(3);
+    });
+
+    it("nearDuplicateTags flags likely typos but not legitimately distinct tags", () => {
+      addLore(db, { title: "a", summary: "s", body: "b", tags: ["security"] });
+      addLore(db, { title: "b", summary: "s", body: "b", tags: ["securty"] });
+      addLore(db, { title: "c", summary: "s", body: "b", tags: ["payments"] });
+      const dupes = nearDuplicateTags(db);
+      const pairs = dupes.map((d) => [d.a, d.b].sort().join("~"));
+      expect(pairs).toContain("security~securty");
+      expect(pairs.some((p) => p.includes("payments"))).toBe(false);
+    });
+
+    it("nearDuplicateTags ignores very short tags where 1-2 edits is the whole word", () => {
+      addLore(db, { title: "a", summary: "s", body: "b", tags: ["db"] });
+      addLore(db, { title: "b", summary: "s", body: "b", tags: ["qa"] });
+      expect(nearDuplicateTags(db)).toHaveLength(0);
     });
   });
 });
