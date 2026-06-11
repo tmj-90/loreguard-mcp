@@ -141,6 +141,53 @@ export function retireCandidates(
   }));
 }
 
+export interface ValueSummary {
+  /** 'read' events in the window — each is the agent reusing team memory. */
+  readonly retrievals: number;
+  /** Distinct records that were retrieved at least once in the window. */
+  readonly recordsCited: number;
+  /**
+   * Rough estimate of the reviewed summary text served into agent context
+   * over the window, in tokens. Computed as (title + summary chars) ÷ 4
+   * summed across retrievals. Deliberately conservative and labelled an
+   * estimate — it counts what was actually *served*, NOT a speculative
+   * "tokens saved" (we can't know the counterfactual cost of re-deriving).
+   */
+  readonly approxTokensServed: number;
+  /** The window (days) these figures cover. */
+  readonly windowDays: number;
+}
+
+/**
+ * The "is this earning its keep?" headline. Each retrieval is a moment the
+ * agent pulled a vetted record instead of guessing or re-researching; the
+ * token figure makes the otherwise-invisible payoff concrete without
+ * overclaiming. Honest framing matters here — see `approxTokensServed`.
+ */
+export function valueSummary(
+  db: Database,
+  opts: { sinceDays?: number } = {},
+): ValueSummary {
+  const windowDays = opts.sinceDays ?? 90;
+  const since = isoDaysAgo(windowDays);
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS retrievals,
+              COUNT(DISTINCT e.lore_id) AS recordsCited,
+              COALESCE(SUM(LENGTH(l.title) + LENGTH(l.summary)), 0) AS chars
+       FROM events e
+       INNER JOIN lore l ON l.id = e.lore_id
+       WHERE e.kind = 'read' AND e.ts >= ?`,
+    )
+    .get(since) as { retrievals: number; recordsCited: number; chars: number };
+  return {
+    retrievals: row.retrievals,
+    recordsCited: row.recordsCited,
+    approxTokensServed: Math.round(row.chars / 4),
+    windowDays,
+  };
+}
+
 const KNOWN_KINDS = new Set([
   "suggested",
   "approved",
@@ -193,8 +240,28 @@ export function renderStatsReport(
     /** Window used for retire-candidate quiet-period. */
     quietForDays: number;
   } = { sinceDays: 90, quietForDays: 180 },
+  value?: ValueSummary,
 ): string {
   const lines: string[] = [];
+  if (value) {
+    lines.push(`Value (last ${value.windowDays} days):`);
+    if (value.retrievals === 0) {
+      lines.push(
+        "  No retrievals yet — once agents start searching, this shows the",
+      );
+      lines.push("  reviewed memory they reused instead of re-deriving it.");
+    } else {
+      lines.push(
+        `  ${value.retrievals} retrieval(s) across ${value.recordsCited} record(s) — ` +
+          `each one reused team memory instead of guessing.`,
+      );
+      lines.push(
+        `  ≈ ${value.approxTokensServed.toLocaleString()} tokens of reviewed summary served ` +
+          `(rough estimate: title+summary ÷ 4).`,
+      );
+    }
+    lines.push("");
+  }
   lines.push(`Top-cited records (last ${windows.sinceDays} days):`);
   if (top.length === 0) {
     lines.push("  (no reads recorded yet — run a search or two)");

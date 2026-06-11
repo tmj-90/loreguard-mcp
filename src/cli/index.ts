@@ -1964,6 +1964,7 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
     renderStatsReport,
     retireCandidates,
     topCitedRecords,
+    valueSummary,
   } = await import("./stats.js");
   // Numeric flags: refuse non-integer input early rather than passing
   // NaN through to better-sqlite3 (which raises an unhelpful "datatype
@@ -2014,6 +2015,7 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
     const cited = topCitedRecords(db, { sinceDays, limit: top });
     const activity = recentActivity(db, { days: sinceDays });
+    const value = valueSummary(db, { sinceDays });
     // --evidence: pull the actual audit queries that hit each top-cited
     // record. Streamed; safe on large audit logs. Answers "is loreguard
     // earning its keep?" concretely — each top-cited record gets its
@@ -2037,6 +2039,7 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
     if (wantsJson) {
       const payload: Record<string, unknown> = {
+        value,
         topCited: cited,
         retireCandidates: retire,
         recentActivity: activity,
@@ -2052,8 +2055,13 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
       process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     } else {
       process.stdout.write(
-        renderStatsReport(cited, retire, activity, { sinceDays, quietForDays }) +
-          "\n",
+        renderStatsReport(
+          cited,
+          retire,
+          activity,
+          { sinceDays, quietForDays },
+          value,
+        ) + "\n",
       );
       if (wantsEvidence && cited.length > 0) {
         process.stdout.write("\nEvidence (queries that hit each top record):\n");

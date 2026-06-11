@@ -22,8 +22,10 @@ import {
 import {
   evidenceForRecord,
   recentActivity,
+  renderStatsReport,
   retireCandidates,
   topCitedRecords,
+  valueSummary,
 } from "../src/cli/stats.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
@@ -157,6 +159,52 @@ describe("topCitedRecords", () => {
     getLore(db, a.id);
     db.prepare("DELETE FROM lore WHERE id = ?").run(a.id);
     expect(topCitedRecords(db)).toEqual([]);
+  });
+});
+
+describe("valueSummary", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+    delete process.env["LOREGUARD_NO_TELEMETRY"];
+    delete process.env["LOREGUARD_AUDIT_OFF"];
+  });
+
+  it("counts retrievals + distinct records and estimates tokens served", () => {
+    const a = addLore(db, {
+      title: "Argon2id default",
+      summary: "Platform password-hashing ruling.",
+      body: "b",
+    });
+    const b = addLore(db, { title: "Cache TTL", summary: "60 seconds.", body: "b" });
+    getLore(db, a.id);
+    getLore(db, a.id);
+    getLore(db, b.id);
+    const v = valueSummary(db, { sinceDays: 7 });
+    expect(v.retrievals).toBe(3);
+    expect(v.recordsCited).toBe(2);
+    // (title+summary chars) ÷ 4, summed across the 3 reads — must be > 0.
+    expect(v.approxTokensServed).toBeGreaterThan(0);
+  });
+
+  it("is all-zero on a cold corpus (no reads)", () => {
+    addLore(db, { title: "unread", summary: "s", body: "b" });
+    const v = valueSummary(db, { sinceDays: 90 });
+    expect(v).toMatchObject({ retrievals: 0, recordsCited: 0, approxTokensServed: 0 });
+  });
+
+  it("renderStatsReport leads with the value section when given one", () => {
+    const a = addLore(db, { title: "t", summary: "s", body: "b" });
+    getLore(db, a.id);
+    const v = valueSummary(db, { sinceDays: 7 });
+    const out = renderStatsReport([], [], recentActivity(db), undefined, v);
+    expect(out).toMatch(/^Value \(last 7 days\):/);
+    expect(out).toMatch(/tokens of reviewed summary served/);
+  });
+
+  it("renderStatsReport omits the value section when not given one", () => {
+    const out = renderStatsReport([], [], recentActivity(db));
+    expect(out).not.toMatch(/^Value/);
   });
 });
 
