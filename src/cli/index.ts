@@ -11,7 +11,9 @@ import {
 } from "../core/absence.js";
 import {
   addBoundary,
+  analyzeConnections,
   approveBoundary,
+  counterpartRepos,
   deprecateBoundary,
   findDependents,
   listBoundaries,
@@ -226,11 +228,13 @@ COMMANDS
                             (depends on) it. The consumers are the blast
                             radius of a shape change. Reads the map
                             aggregated locally + via sync pull.
-  graph [<repo>] [--json] [--include-drafts]
+  graph [<repo>] [--gaps] [--json] [--include-drafts]
                             Repo-level architecture graph from boundary
                             edges. No arg: the whole dependency map. With
                             a repo: its full multi-hop upstream (what it
                             depends on) and downstream (the blast radius).
+                            --gaps: contracts consumed with no provider
+                            (and provided with no consumer) — map holes.
   discover [<path>] [--repo N] [--write] [--json]
                             Scan source for contract signals (HTTP routes,
                             pub/sub topics, queue consumers) and propose
@@ -1010,8 +1014,20 @@ async function cmdDiscover(args: ReturnType<typeof parseArgs>): Promise<number> 
 
   const edges = discoverEdges(path);
   if (wantsJson) {
-    process.stdout.write(JSON.stringify({ repo, edges }, null, 2) + "\n");
-    return 0;
+    const db = openDb();
+    try {
+      const annotated = edges.map((e) => ({
+        ...e,
+        connectsTo: counterpartRepos(db, e.contract, e.role, {
+          selfRepo: repo,
+          includeDrafts: true,
+        }),
+      }));
+      process.stdout.write(JSON.stringify({ repo, edges: annotated }, null, 2) + "\n");
+      return 0;
+    } finally {
+      db.close();
+    }
   }
   if (edges.length === 0) {
     process.stdout.write(
@@ -1023,29 +1039,47 @@ async function cmdDiscover(args: ReturnType<typeof parseArgs>): Promise<number> 
     return 0;
   }
 
-  process.stdout.write(
-    `loreguard discover: ${edges.length} candidate edge(s) for '${repo}'` +
-      (write ? "" : " (dry run — nothing written)") +
-      "\n\n",
-  );
-  for (const e of edges) {
-    const arrow = e.role === "provides" ? "provides" : "consumes";
-    process.stdout.write(
-      `  ${repo} ${arrow} ${e.contract}  [${e.kind}, ${e.occurrences}×]\n` +
-        `    evidence: ${e.evidence.join(", ")}\n`,
-    );
-  }
-
-  if (!write) {
-    process.stdout.write(
-      "\nThese are candidates, not facts. Re-run with --write to add them as\n" +
-        "DRAFT edges, then ratify with `loreguard boundary review`.\n",
-    );
-    return 0;
-  }
-
   const db = openDb();
   try {
+    process.stdout.write(
+      `loreguard discover: ${edges.length} candidate edge(s) for '${repo}'` +
+        (write ? "" : " (dry run — nothing written)") +
+        "\n\n",
+    );
+    let connections = 0;
+    for (const e of edges) {
+      const arrow = e.role === "provides" ? "provides" : "consumes";
+      // The join moment: does this edge connect to one already in the map
+      // (from this or — after sync — another repo)?
+      const counterparts = counterpartRepos(db, e.contract, e.role, {
+        selfRepo: repo,
+        includeDrafts: true,
+      });
+      const link =
+        counterparts.length > 0
+          ? `  ↔ ${e.role === "consumes" ? "provided by" : "consumed by"} ${counterparts.join(", ")}`
+          : "";
+      if (counterparts.length > 0) connections++;
+      process.stdout.write(
+        `  ${repo} ${arrow} ${e.contract}  [${e.kind}, ${e.occurrences}×]${link}\n` +
+          `    evidence: ${e.evidence.join(", ")}\n`,
+      );
+    }
+    if (connections > 0) {
+      process.stdout.write(
+        `\n${connections} candidate(s) connect to the existing map (↔). ` +
+          "Run `loreguard sync pull <parent>` first to match against other repos.\n",
+      );
+    }
+
+    if (!write) {
+      process.stdout.write(
+        "\nThese are candidates, not facts. Re-run with --write to add them as\n" +
+          "DRAFT edges, then ratify with `loreguard boundary review`.\n",
+      );
+      return 0;
+    }
+
     let created = 0;
     for (const e of edges) {
       suggestBoundary(db, {
@@ -1070,9 +1104,43 @@ async function cmdDiscover(args: ReturnType<typeof parseArgs>): Promise<number> 
 async function cmdGraph(args: ReturnType<typeof parseArgs>): Promise<number> {
   const includeDrafts = getBool(args.flags, "include-drafts");
   const wantsJson = getBool(args.flags, "json");
+  const gaps = getBool(args.flags, "gaps");
   const repo = args.positionals[0];
   const db = openDb();
   try {
+    if (gaps) {
+      const analysis = analyzeConnections(db, { includeDrafts });
+      if (wantsJson) {
+        process.stdout.write(JSON.stringify(analysis, null, 2) + "\n");
+        return 0;
+      }
+      const { matched, danglingConsumers, orphanProviders } = analysis;
+      process.stdout.write(
+        `Connection analysis: ${matched.length} matched, ` +
+          `${danglingConsumers.length} dangling consumer(s), ` +
+          `${orphanProviders.length} orphan provider(s)\n\n`,
+      );
+      process.stdout.write(
+        `Dangling consumers (depended on, but no provider in the map):\n`,
+      );
+      if (danglingConsumers.length === 0) process.stdout.write("  (none)\n");
+      for (const c of danglingConsumers) {
+        process.stdout.write(`  ${c.contract}  ← ${c.consumers.join(", ")}\n`);
+      }
+      process.stdout.write(
+        `\nOrphan providers (owned, but nothing in the map consumes them):\n`,
+      );
+      if (orphanProviders.length === 0) process.stdout.write("  (none)\n");
+      for (const c of orphanProviders) {
+        process.stdout.write(`  ${c.contract}  → ${c.providers.join(", ")}\n`);
+      }
+      process.stdout.write(
+        "\nDangling consumers are the signal to chase: a missing `provides` " +
+          "edge (run\n`loreguard sync pull` / `discover` on the owning repo), " +
+          "or a genuinely external dependency.\n",
+      );
+      return 0;
+    }
     if (repo) {
       // Per-repo view: full multi-hop upstream + downstream (blast radius).
       const up = upstreamRepos(db, repo, { includeDrafts });
@@ -1393,6 +1461,8 @@ async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
           includeRestricted,
         }),
         graph: buildRepoGraph(db, { includeDrafts }),
+        danglingConsumers: analyzeConnections(db, { includeDrafts })
+          .danglingConsumers,
         generatedAt: new Date().toISOString(),
       });
       if (out) {

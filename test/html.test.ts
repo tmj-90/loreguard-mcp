@@ -72,6 +72,25 @@ describe("cli/html — renderHtml", () => {
     expect(html).toMatch(/No architecture edges yet/);
   });
 
+  it("flags dangling consumers in a warning panel when given them", () => {
+    const html = renderHtml({
+      lore: [],
+      graph: emptyGraph,
+      danglingConsumers: [
+        { contract: "third-party-api", providers: [], consumers: ["app-svc"] },
+      ],
+      generatedAt: "x",
+    });
+    expect(html).toMatch(/dangling consumer/i);
+    expect(html).toContain("third-party-api");
+    expect(html).toContain("app-svc");
+  });
+
+  it("omits the dangling panel when there are none", () => {
+    const html = renderHtml({ lore: [], graph: emptyGraph, generatedAt: "x" });
+    expect(html).not.toMatch(/dangling consumer/i);
+  });
+
   it("marks a draft and a stale record with badges and a draft toggle", () => {
     const html = renderHtml({
       lore: [

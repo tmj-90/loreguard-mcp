@@ -522,6 +522,26 @@ describe("CLI dispatch — quickstart / digest / tags", () => {
     expect(out).toMatch(/\[draft\]/);
   });
 
+  it("discover surfaces the join to an edge already in the map", async () => {
+    await run("init");
+    // reporting-svc already provides daily-rollup (as if synced from its repo).
+    await run("boundary", "add", "reporting-svc", "daily-rollup", "provides");
+    writeFileSync(join(dir, "app.ts"), 'client.subscribe("daily-rollup")');
+    out = "";
+    await run("discover", dir, "--repo", "finance-svc");
+    expect(out).toMatch(/consumes daily-rollup.*↔ provided by reporting-svc/);
+  });
+
+  it("graph --gaps reports dangling consumers and orphan providers", async () => {
+    await run("init");
+    await run("boundary", "add", "app-svc", "third-party-api", "consumes");
+    await run("boundary", "add", "orders-svc", "internal-metric", "provides");
+    out = "";
+    expect(await run("graph", "--gaps")).toBe(0);
+    expect(out).toMatch(/Dangling consumers[\s\S]*third-party-api/);
+    expect(out).toMatch(/Orphan providers[\s\S]*internal-metric/);
+  });
+
   it("export --html writes a self-contained page with records and the graph", async () => {
     await run("init");
     await run("add", "--title", "Argon2id default", "--summary", "s", "--body", "b", "--repo", "orders-svc");

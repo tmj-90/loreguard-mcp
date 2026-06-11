@@ -11,12 +11,18 @@
  * `renderHtml` is a pure function (data in, string out) for testability; the
  * CLI does the DB reads and file write.
  */
+import type { ContractConnection } from "../core/boundaries.js";
 import type { Lore } from "../db/types.js";
 import type { RepoGraph } from "../core/graph.js";
 
 export interface HtmlModel {
   readonly lore: ReadonlyArray<Lore>;
   readonly graph: RepoGraph;
+  /**
+   * Contracts consumed by someone with no provider in the map — the risk
+   * signal worth flagging on the page. Optional; omitted = nothing to flag.
+   */
+  readonly danglingConsumers?: ReadonlyArray<ContractConnection>;
   /** ISO timestamp the export was generated. */
   readonly generatedAt: string;
 }
@@ -209,6 +215,8 @@ details{margin-top:8px}details pre{white-space:pre-wrap;background:#11141a;borde
 .node rect{fill:#1f242e;stroke:var(--accent)}.node text{fill:var(--fg);font-size:12px}
 .edge{fill:none;stroke:var(--mut);stroke-width:1.5}.arrowhead{fill:var(--mut)}
 .legend{color:var(--mut);font-size:12px;margin-top:8px}
+.dangling{margin-top:12px;padding:10px 14px;background:#231a17;border:1px solid #5a3a23;border-radius:8px;color:#e0b08a;font-size:13px}
+.dangling ul{margin:6px 0 0;padding-left:18px}.dangling code{color:#f0c8a0}
 .empty{color:var(--mut)}
 footer{color:var(--mut);text-align:center;padding:24px;font-size:12px}
 `;
@@ -230,6 +238,24 @@ const SCRIPT = `
   apply();
 })();
 `;
+
+/** Warning panel for contracts consumed with no provider in the map. */
+function renderDangling(
+  dangling: ReadonlyArray<ContractConnection> | undefined,
+): string {
+  if (!dangling || dangling.length === 0) return "";
+  const rows = dangling
+    .map(
+      (c) =>
+        `<li><code>${esc(c.contract)}</code> — consumed by ${esc(c.consumers.join(", "))}, provided by no one</li>`,
+    )
+    .join("");
+  return (
+    `<div class="dangling"><strong>⚠ ${dangling.length} dangling consumer(s)</strong>` +
+    ` — depended on but unowned in this map (a missing provider edge, or an external dependency):` +
+    `<ul>${rows}</ul></div>`
+  );
+}
 
 /**
  * Render the whole self-contained page. No external resources — all CSS and
@@ -256,6 +282,7 @@ export function renderHtml(model: HtmlModel): string {
   <h2>Architecture</h2>
   <div class="legend">Arrows point from a consumer to the upstream repo it depends on. Hover an edge for the contracts that create it.</div>
   <div class="graph-wrap">${renderGraphSvg(model.graph)}</div>
+  ${renderDangling(model.danglingConsumers)}
 
   <h2>Records</h2>
   <div class="toolbar">

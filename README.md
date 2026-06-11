@@ -860,6 +860,33 @@ the code, and hand-declare anything your stack hides. This is the
 mechanical-grep half of mapping; human (or onboard-agent) judgement is still
 the ratifying half.
 
+Discovery also shows the **join moment** — when a candidate connects to an
+edge already in the map (from this repo or, after `sync pull`, another), it's
+flagged inline:
+
+```
+finance-svc consumes daily-rollup   ↔ provided by reporting-svc
+```
+
+so a pile of per-repo edges visibly wires itself into one graph.
+
+**Find the holes — `loreguard graph --gaps`.** The map's most useful warning
+is asymmetry:
+
+```bash
+loreguard graph --gaps
+#   Dangling consumers (depended on, but no provider in the map):
+#     stripe-charge-api  ← app-svc          # a missing owner, or an external dep
+#   Orphan providers (owned, but nothing in the map consumes them):
+#     internal-metric    → orders-svc        # dead, or consumers not yet onboarded
+```
+
+A **dangling consumer** is the signal to chase: someone depends on a contract
+nobody in the map is shown to own — either a `provides` edge you haven't
+captured yet (run `discover` / `sync pull` on the owning repo) or a genuinely
+external dependency worth labelling. The HTML export surfaces the same
+dangling-consumer warning on the page.
+
 ### A browsable, committable view — `loreguard export --html`
 
 `loreguard export --html --out docs/lore.html` writes a **single

@@ -2,7 +2,12 @@ import BetterSqlite3 from "better-sqlite3";
 import type { Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { addBoundary, suggestBoundary } from "../src/core/boundaries.js";
+import {
+  addBoundary,
+  analyzeConnections,
+  counterpartRepos,
+  suggestBoundary,
+} from "../src/core/boundaries.js";
 import {
   buildRepoGraph,
   downstreamRepos,
@@ -99,5 +104,41 @@ describe("core/graph", () => {
     expect(
       downstreamRepos(db, "orders-svc", { includeDrafts: true }).map((d) => d.repo),
     ).toEqual(["guess-svc"]);
+  });
+});
+
+describe("core/boundaries — connection analysis", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+  });
+
+  it("counterpartRepos returns the opposite side, excluding self", () => {
+    addBoundary(db, { repo: "reporting-svc", contract: "daily-rollup", role: "provides" });
+    addBoundary(db, { repo: "finance-svc", contract: "daily-rollup", role: "consumes" });
+    // A new consumer's counterpart is the provider(s).
+    expect(counterpartRepos(db, "daily-rollup", "consumes", { selfRepo: "finance-svc" }))
+      .toEqual(["reporting-svc"]);
+    // A new provider's counterpart is the consumer(s).
+    expect(counterpartRepos(db, "daily-rollup", "provides", { selfRepo: "reporting-svc" }))
+      .toEqual(["finance-svc"]);
+    // Contract names normalise on the way in.
+    expect(counterpartRepos(db, "Daily Rollup", "consumes")).toContain("reporting-svc");
+  });
+
+  it("analyzeConnections classifies matched / dangling / orphan", () => {
+    // matched: both sides
+    addBoundary(db, { repo: "orders-svc", contract: "order-submitted", role: "provides" });
+    addBoundary(db, { repo: "billing-svc", contract: "order-submitted", role: "consumes" });
+    // dangling consumer: consumed, never provided
+    addBoundary(db, { repo: "app-svc", contract: "third-party-api", role: "consumes" });
+    // orphan provider: provided, never consumed
+    addBoundary(db, { repo: "orders-svc", contract: "internal-metric", role: "provides" });
+    const a = analyzeConnections(db);
+    expect(a.matched.map((c) => c.contract)).toEqual(["order-submitted"]);
+    expect(a.danglingConsumers.map((c) => c.contract)).toEqual(["third-party-api"]);
+    expect(a.orphanProviders.map((c) => c.contract)).toEqual(["internal-metric"]);
+    expect(a.matched[0]!.providers).toEqual(["orders-svc"]);
+    expect(a.matched[0]!.consumers).toEqual(["billing-svc"]);
   });
 });

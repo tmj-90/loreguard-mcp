@@ -363,6 +363,92 @@ export function listContracts(
   return rows.map((r) => r.contract);
 }
 
+/** One contract with the repos on each side of it. */
+export interface ContractConnection {
+  readonly contract: string;
+  readonly providers: string[];
+  readonly consumers: string[];
+}
+
+/**
+ * The repos on the OPPOSITE side of `contract` from `role`, excluding
+ * `selfRepo`. This is the "what does this edge connect to?" lookup: a new
+ * `consumes` edge wants its providers; a new `provides` edge wants its
+ * consumers. Powers the join feedback in `discover` and `boundary add` so a
+ * per-repo edge visibly links into the cross-repo map the moment it lands.
+ */
+export function counterpartRepos(
+  db: Database,
+  contract: string,
+  role: BoundaryRole,
+  opts: { selfRepo?: string; includeDrafts?: boolean } = {},
+): string[] {
+  const { providers, consumers } = findDependents(db, contract, {
+    includeDrafts: opts.includeDrafts,
+  });
+  const opposite = role === "consumes" ? providers : consumers;
+  const self = opts.selfRepo ? normaliseRepo(opts.selfRepo) : undefined;
+  return Array.from(
+    new Set(opposite.map((e) => e.repo).filter((r) => r !== self)),
+  ).sort();
+}
+
+export interface ConnectionAnalysis {
+  /** Contracts with at least one provider AND one consumer — real edges. */
+  readonly matched: ContractConnection[];
+  /** Consumed by someone, provided by no one — missing owner / external dep. */
+  readonly danglingConsumers: ContractConnection[];
+  /** Provided by someone, consumed by no one — unused, or consumers unmapped. */
+  readonly orphanProviders: ContractConnection[];
+}
+
+/**
+ * Classify every contract in the map by whether both sides are present.
+ * `danglingConsumers` is the interesting risk signal — someone depends on a
+ * contract nobody in the map is shown to own (a missing `provides` edge, or
+ * a genuinely external dependency worth labelling as such). `orphanProviders`
+ * flags contracts nothing consumes (dead, or consumers not yet onboarded).
+ * Active edges only by default; drafts opt-in.
+ */
+export function analyzeConnections(
+  db: Database,
+  opts: { includeDrafts?: boolean } = {},
+): ConnectionAnalysis {
+  const edges = listBoundaries(db, { includeDrafts: opts.includeDrafts });
+  const byContract = new Map<
+    string,
+    { providers: Set<string>; consumers: Set<string> }
+  >();
+  for (const e of edges) {
+    let entry = byContract.get(e.contract);
+    if (!entry) {
+      entry = { providers: new Set(), consumers: new Set() };
+      byContract.set(e.contract, entry);
+    }
+    if (e.role === "provides") entry.providers.add(e.repo);
+    else entry.consumers.add(e.repo);
+  }
+  const matched: ContractConnection[] = [];
+  const danglingConsumers: ContractConnection[] = [];
+  const orphanProviders: ContractConnection[] = [];
+  for (const [contract, { providers, consumers }] of byContract) {
+    const conn: ContractConnection = {
+      contract,
+      providers: Array.from(providers).sort(),
+      consumers: Array.from(consumers).sort(),
+    };
+    if (providers.size > 0 && consumers.size > 0) matched.push(conn);
+    else if (consumers.size > 0) danglingConsumers.push(conn);
+    else orphanProviders.push(conn);
+  }
+  const byName = (a: ContractConnection, b: ContractConnection) =>
+    a.contract.localeCompare(b.contract);
+  matched.sort(byName);
+  danglingConsumers.sort(byName);
+  orphanProviders.sort(byName);
+  return { matched, danglingConsumers, orphanProviders };
+}
+
 // ── Sync round-trip (cross-repo aggregation) ──────────────────────────
 
 export interface BoundaryExportRecord {
