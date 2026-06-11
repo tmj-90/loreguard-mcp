@@ -77,6 +77,9 @@ USAGE
   loreguard <command> [options]
 
 COMMANDS
+  quickstart                Zero to a working search hit in one command:
+                            inits the DB, seeds a demo set if empty, runs
+                            a live search, then points you at setup.
   init                      Create / migrate the local DB
   add                       Add a note (human, status=active). Interactive
                             unless --title is given. Refuses records
@@ -1290,6 +1293,71 @@ async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
 }
 
 /**
+ * `loreguard quickstart` — zero to a working search hit in one command.
+ *
+ * The day-1 failure mode is "time to first hit": a user installs, wires the
+ * agent, searches, gets nothing (empty corpus), and concludes it's broken.
+ * `setup` wires the agent but leaves the corpus empty by design; this is the
+ * complementary onramp that proves the value FIRST — it inits the DB, seeds
+ * the demo set if (and only if) the store is empty, runs a real search in
+ * front of the user, and then points at `setup` and `onboard` for the real
+ * thing. Idempotent and non-destructive: never seeds into a corpus that
+ * already has real records.
+ */
+async function cmdQuickstart(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const db = openDb(); // auto-migrates — no separate init needed
+  try {
+    const existing = countLore(db);
+    let seeded = false;
+    if (existing === 0) {
+      seedDemo(db);
+      seeded = true;
+      process.stdout.write(
+        "loreguard quickstart\n\n" +
+          "Seeded a small demo set so you can see it work right now\n" +
+          "(every demo record is tagged 'demo' — remove later with\n" +
+          "`loreguard demo --clean`).\n\n",
+      );
+    } else {
+      process.stdout.write(
+        "loreguard quickstart\n\n" +
+          `Your store already has ${existing} record(s) — not seeding the demo set.\n\n`,
+      );
+    }
+
+    // Run a real search in front of the user — this is the "aha".
+    const demoQuery = "password hashing";
+    const hits = searchLore(db, { query: demoQuery, limit: 3 });
+    process.stdout.write(`$ loreguard search "${demoQuery}"\n\n`);
+    if (hits.length === 0) {
+      process.stdout.write(
+        "  (no hits yet — add a record with `loreguard add`, or run\n" +
+          "  /loreguard-onboard in Claude Code to populate from your repo)\n\n",
+      );
+    } else {
+      for (const h of hits) process.stdout.write(renderSummary(h) + "\n\n");
+    }
+
+    process.stdout.write(
+      "Next steps:\n" +
+        "  1. Wire your agent:   loreguard setup        (Claude Code)\n" +
+        "                        docs/clients.md        (Cursor / Windsurf / …)\n" +
+        "  2. Populate for real: open Claude Code here and run /loreguard-onboard,\n" +
+        "                        or `loreguard add` your first decision by hand.\n" +
+        "  3. Check the backlog: loreguard digest\n",
+    );
+    if (seeded) {
+      process.stdout.write(
+        "  4. Tidy up the demo:  loreguard demo --clean\n",
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Best-effort autodetect of a repo name for the current directory.
  *
  * Order of preference:
@@ -2244,6 +2312,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdSync(parsed);
       case "setup":
         return await cmdSetup(parsed);
+      case "quickstart":
+        return await cmdQuickstart(parsed);
       case "demo":
         return await cmdDemo(parsed);
       case "absent":

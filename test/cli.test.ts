@@ -432,3 +432,74 @@ describe("CLI — cross-repo sync pull aggregates the boundary map", () => {
     expect(out).toMatch(/Consumers.*1/s);
   });
 });
+
+describe("CLI dispatch — quickstart / digest / tags", () => {
+  it("quickstart seeds an empty DB and ends in a live search hit", async () => {
+    expect(await run("quickstart")).toBe(0);
+    expect(out).toContain("Seeded a small demo set");
+    // The demo set contains the Argon2id record, which the canned search hits.
+    expect(out).toMatch(/loreguard search "password hashing"/);
+    expect(out).toMatch(/Argon2id/);
+    expect(out).toContain("loreguard setup");
+  });
+
+  it("quickstart is idempotent — won't re-seed a non-empty DB", async () => {
+    await run("quickstart");
+    out = "";
+    expect(await run("quickstart")).toBe(0);
+    expect(out).toMatch(/already has \d+ record/);
+    expect(out).not.toContain("Seeded a small demo set");
+  });
+
+  it("digest reports all-clear on an empty store, then lists drafts", async () => {
+    await run("init");
+    out = "";
+    expect(await run("digest")).toBe(0);
+    expect(out).toMatch(/nothing needs attention/i);
+    out = "";
+    await run("suggest", "--title", "A pending idea", "--summary", "s", "--body", "b");
+    out = "";
+    expect(await run("digest")).toBe(0);
+    expect(out).toMatch(/Pending drafts/);
+    expect(out).toContain("A pending idea");
+  });
+
+  it("add refuses a credential-shaped body unless --allow-secrets", async () => {
+    await run("init");
+    out = "";
+    err = "";
+    const code = await run(
+      "add",
+      "--title", "leftover config",
+      "--summary", "s",
+      "--body", "key AKIAIOSFODNN7EXAMPLE here",
+    );
+    expect(code).toBe(2);
+    expect(err).toMatch(/possible secret/i);
+    err = "";
+    expect(
+      await run(
+        "add",
+        "--title", "leftover config",
+        "--summary", "s",
+        "--body", "key AKIAIOSFODNN7EXAMPLE here",
+        "--allow-secrets",
+      ),
+    ).toBe(0);
+  });
+
+  it("tags lists with counts and merges near-duplicates", async () => {
+    await run("init");
+    await run("add", "--title", "A", "--summary", "s", "--body", "b", "--tag", "security");
+    await run("add", "--title", "B", "--summary", "s", "--body", "b", "--tag", "securty");
+    out = "";
+    expect(await run("tags")).toBe(0);
+    expect(out).toMatch(/near-duplicate tag pair/);
+    out = "";
+    expect(await run("tags", "merge", "securty", "security")).toBe(0);
+    out = "";
+    await run("tags");
+    expect(out).toContain("security");
+    expect(out).not.toContain("securty");
+  });
+});

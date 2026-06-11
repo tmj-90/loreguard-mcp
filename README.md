@@ -26,8 +26,13 @@ Install globally with npm (or the package manager of your choice):
 
 ```bash
 npm i -g loreguard-mcp
-loreguard init                # creates ~/.loreguard/lore.db (mode 0600)
+loreguard quickstart          # init + seed a demo set + a live search hit
 ```
+
+`quickstart` is the fastest way to see it work: it creates the DB, seeds a
+small demo corpus (only if your store is empty), and runs a real search in
+front of you, then points at `setup`. Prefer to start from scratch? Just
+`loreguard init` (creates `~/.loreguard/lore.db`, mode 0600).
 
 That puts two binaries on your `$PATH`: `loreguard` (the human CLI) and
 `loreguard-mcp` (the MCP server your agents connect to). The package is
