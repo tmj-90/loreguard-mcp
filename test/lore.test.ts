@@ -621,6 +621,24 @@ describe("core/lore", () => {
       addLore(db, { title: "totally unrelated", summary: "nope", body: "b" });
       expect(relatedLore(db, "nonexistent-contract")).toEqual([]);
     });
+
+    it("does NOT record read events (display query must not inflate stats)", () => {
+      const r = addLore(db, {
+        title: "payments must be idempotent",
+        summary: "retries are expected",
+        body: "b",
+        tags: ["payments"],
+      });
+      relatedLore(db, "payments");
+      const reads = (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM events WHERE kind = 'read' AND lore_id = ?",
+          )
+          .get(r.id) as { n: number }
+      ).n;
+      expect(reads).toBe(0);
+    });
   });
 
   describe("searchLore — trust-aware ranking", () => {

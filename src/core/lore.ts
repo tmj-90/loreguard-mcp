@@ -1305,7 +1305,7 @@ export function searchLore(
       row.score ?? undefined,
     ),
   );
-  recordRead(db, ids, "search");
+  recordRead(db, opts.recordReads === false ? [] : ids, "search");
   return annotatePossibleConflicts(summaries);
 }
 
@@ -1343,14 +1343,22 @@ export function relatedLore(
       out.push(h);
     }
   };
-  // 1. Explicit link: a record tagged with the contract name.
-  take(
-    searchLore(db, {
-      tag: contract,
-      limit,
-      includeRestricted: opts.includeRestricted,
-    }),
-  );
+  // 1. Explicit link: a record tagged with the contract name. Only attempt
+  //    this for token-shaped contracts (`order-submitted`) — a path/method
+  //    contract like `GET /orders/:id` would be mangled by tag normalisation
+  //    into something nothing is tagged with, so skip it and rely on step 2.
+  //    `recordReads: false` — surfacing a rule beside an impact map is a
+  //    display query, not a retrieval; it must not inflate read-tracking.
+  if (/^[\w-]+$/.test(contract.trim())) {
+    take(
+      searchLore(db, {
+        tag: contract,
+        limit,
+        includeRestricted: opts.includeRestricted,
+        recordReads: false,
+      }),
+    );
+  }
   // 2. Text match on the contract's meaningful tokens (precision via `all`).
   const terms = contract
     .replace(/[^A-Za-z0-9]+/g, " ")
@@ -1369,6 +1377,7 @@ export function relatedLore(
         match: "all",
         limit,
         includeRestricted: opts.includeRestricted,
+        recordReads: false,
       }),
     );
   }
@@ -1862,11 +1871,17 @@ function editDistanceWithin(a: string, b: string, max: number): number {
 
 /**
  * Pairs of existing tags within `maxDistance` edits of each other —
- * likely-typo'd duplicates (`security` / `securty`, `db` / `dbs`) that
- * silently fragment retrieval. Surfaced by `loreguard doctor`. Each pair
- * carries both record counts so the human knows which is the stray.
- * Pairs are emitted once (a < b), most-confusable (smallest distance,
- * then most-populated) first.
+ * likely-typo'd duplicates (`security` / `securty`, `payments` /
+ * `payment`) that silently fragment retrieval. Surfaced by `loreguard
+ * doctor`. Each pair carries both record counts so the human knows which
+ * is the stray. Pairs are emitted once (a < b), most-confusable (smallest
+ * distance, then most-populated) first.
+ *
+ * The shorter tag must be at least `maxDistance + 2` chars (so a default
+ * `maxDistance` of 2 needs ≥4 chars): below that, 1–2 edits is most of the
+ * word and unrelated short tags (`db`/`qa`, `ci`/`cd`) would flag as
+ * lookalikes. The trade-off is that genuinely-confusable short typos
+ * (`db`/`dbs`) are NOT caught — accepted to keep false positives near zero.
  */
 export function nearDuplicateTags(
   db: Database,

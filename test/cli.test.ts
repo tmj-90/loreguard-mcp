@@ -560,6 +560,17 @@ describe("CLI dispatch — quickstart / digest / tags", () => {
     expect(first).not.toMatch(/generatedAt|exportedAt|\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("export --html excludes restricted records even with --include-restricted (it's a shareable artifact)", async () => {
+    await run("init");
+    await run("add", "--title", "Public convention", "--summary", "s", "--body", "b");
+    await run("add", "--title", "SECRET oncall rota", "--summary", "s", "--body", "b", "--restricted");
+    const outPath = join(dir, "lore.html");
+    await run("export", "--html", "--include-restricted", "--out", outPath);
+    const html = readFileSync(outPath, "utf8");
+    expect(html).toContain("Public convention");
+    expect(html).not.toContain("SECRET oncall rota");
+  });
+
   it("export --html writes a self-contained page with records and the graph", async () => {
     await run("init");
     await run("add", "--title", "Argon2id default", "--summary", "s", "--body", "b", "--repo", "orders-svc");

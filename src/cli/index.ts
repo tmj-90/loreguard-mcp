@@ -1482,23 +1482,20 @@ async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
   const includeRestricted = getBool(args.flags, "include-restricted");
   const db = openDb();
   try {
-    const records = exportLore(db, {
-      includeDrafts,
-      includeDeprecated,
-      includeSuperseded,
-      includeRestricted,
-    });
     if (asHtml) {
-      // Self-contained static page: records + architecture graph. Drafts
-      // are included in the data so the page's "show drafts" toggle has
-      // something to reveal; default-active records are what shows first.
+      // Self-contained static page: records + architecture graph. This file
+      // is meant to be committed / published (GitHub Pages), so restricted
+      // records are ALWAYS excluded regardless of --include-restricted — it
+      // is not a private backup like the JSON export. Drafts are included in
+      // the data so the page's "show drafts" toggle has something to reveal;
+      // default-active records are what shows first.
       const { renderHtml } = await import("./html.js");
       const html = renderHtml({
         lore: exportLore(db, {
           includeDrafts: true,
           includeDeprecated,
           includeSuperseded,
-          includeRestricted,
+          includeRestricted: false,
         }),
         graph: buildRepoGraph(db, { includeDrafts }),
         danglingConsumers: analyzeConnections(db, { includeDrafts })
@@ -1513,6 +1510,12 @@ async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
       }
       return 0;
     }
+    const records = exportLore(db, {
+      includeDrafts,
+      includeDeprecated,
+      includeSuperseded,
+      includeRestricted,
+    });
     const envelope = {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),

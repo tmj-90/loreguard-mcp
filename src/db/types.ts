@@ -156,6 +156,14 @@ export interface SearchOptions {
    * single adjacency-matched unit under either mode.
    */
   readonly match?: "any" | "all";
+  /**
+   * Whether to record a `read` event per returned hit (default true). The
+   * read-tracking that `stats` / retirement keys off should reflect records
+   * an agent actually retrieved — so internal, display-only queries (e.g.
+   * `relatedLore` surfacing "applicable lore" beside an impact map) pass
+   * `false` to avoid inflating citation counts for records nobody searched.
+   */
+  readonly recordReads?: boolean;
   readonly limit?: number;
 }
 
