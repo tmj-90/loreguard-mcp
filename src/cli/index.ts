@@ -45,6 +45,7 @@ import {
   updateLore,
   verifyLore,
 } from "../core/lore.js";
+import { scanLoreFields } from "../core/secrets.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
 import { cleanDemo, countLore, seedDemo } from "./demo.js";
 import { buildDigest, renderDigest } from "./digest.js";
@@ -78,7 +79,9 @@ USAGE
 COMMANDS
   init                      Create / migrate the local DB
   add                       Add a note (human, status=active). Interactive
-                            unless --title is given.
+                            unless --title is given. Refuses records
+                            containing a credential-shaped string;
+                            override a false positive with --allow-secrets.
   suggest                   Same as add but lands as a draft. Used by agents;
                             also handy when you want to triage later.
   suggest --from-commit <sha>
@@ -296,6 +299,20 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
   const reviewAfter = getString(args.flags, "review-after");
   const confidence = parseConfidence(getString(args.flags, "confidence"));
   const restricted = getBool(args.flags, "restricted");
+
+  // Write-path secret guard: refuse to store a record that contains a
+  // credential-shaped string (an API key, PEM block, JWT…) unless the
+  // human explicitly overrides. Records are pasted into agent context and
+  // committed via sync, so a leaked token spreads quietly.
+  const secrets = scanLoreFields({ title, summary, body });
+  if (secrets.length > 0 && !getBool(args.flags, "allow-secrets")) {
+    process.stderr.write(
+      `loreguard: refusing to store — possible secret(s) detected:\n` +
+        secrets.map((s) => `  - ${s.type}: ${s.redacted}\n`).join("") +
+        `Remove the credential (link to where it lives instead), or pass --allow-secrets if this is a false positive.\n`,
+    );
+    return 2;
+  }
 
   const db = openDb();
   try {

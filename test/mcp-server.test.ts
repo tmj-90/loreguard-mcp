@@ -534,6 +534,34 @@ describe("MCP — structured validation errors (no raw -32602 masking)", () => {
       expect(res.json.error).toBe("title_required");
     });
 
+    it("credential-shaped body → secret_detected, record NOT stored", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "Old deploy notes",
+        summary: "migration steps",
+        body: "set AWS_KEY=AKIAIOSFODNN7EXAMPLE then run",
+      });
+      expect(res.json.error).toBe("secret_detected");
+      expectFieldError(res, "body");
+      // The agent must not be able to bypass it (no override on MCP), and
+      // nothing should have been written.
+      const stored = (
+        db.prepare("SELECT COUNT(*) AS n FROM lore").get() as { n: number }
+      ).n;
+      expect(stored).toBe(0);
+    });
+
+    it("notes ABOUT secrets are not blocked (no false positive)", async () => {
+      client = await connectClient(db);
+      const res = await callJson(client, "suggest_lore", {
+        title: "Credential handling",
+        summary: "Rotate API keys every 90 days; never log auth headers.",
+        body: "Use the secrets manager. Argon2id for password hashing.",
+      });
+      expect(res.json.error).toBeUndefined();
+      expect(res.json.status).toBe("draft");
+    });
+
     it("bad source URL → source_invalid_url, not a crash", async () => {
       client = await connectClient(db);
       const res = await callJson(client, "suggest_lore", {

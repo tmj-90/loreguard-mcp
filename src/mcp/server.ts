@@ -15,6 +15,7 @@ import {
   searchLoreCount,
   suggestLore,
 } from "../core/lore.js";
+import { scanLoreFields } from "../core/secrets.js";
 import { defaultDbPath, openDb } from "../db/index.js";
 import { DatabaseTooNewError } from "../db/migrations.js";
 import {
@@ -570,6 +571,24 @@ export function buildMcpServer(db: Database): McpServer {
       const summaryLen = checkLength("summary", summary);
       if (summaryLen) {
         return fieldErrorResponse(tooLongToFieldError("summary", summaryLen));
+      }
+      // Secret guard — refuse to draft a record carrying a credential-shaped
+      // string. Agents paste snippets; a record body is the wrong place for a
+      // live token (it'd be served into context on every future search hit
+      // and committed via sync). Structured error so the agent strips the
+      // secret and retries — and there's no override on the MCP surface, by
+      // design: a human can force it via the CLI, an agent can't.
+      const secrets = scanLoreFields({ title, summary, body });
+      if (secrets.length > 0) {
+        return fieldErrorResponse({
+          error: "secret_detected",
+          field: "body",
+          hint:
+            "This record contains what looks like a live credential (" +
+            secrets.map((s) => s.type).join(", ") +
+            "). Remove it and link to where the secret actually lives " +
+            "(a secrets manager, the relevant config) instead of pasting it.",
+        });
       }
       try {
         const lore = suggestLore(db, {
