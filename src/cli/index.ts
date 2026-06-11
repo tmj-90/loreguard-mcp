@@ -173,6 +173,17 @@ COMMANDS
                             Same flags as \`sync import\`. Skips heavy
                             directories (node_modules, .git, dist,
                             build, target, vendor, etc.).
+  estate [<parent>] [--out-dir D] [--db PATH]
+                            Enterprise roll-up (git + CI, not a server):
+                            aggregate every team's committed .loreguard/
+                            under <parent>, then write index.html +
+                            architecture.json to --out-dir and report
+                            estate-wide gaps. Point --db / LOREGUARD_DB at
+                            a repo-local file in CI for reproducibility.
+  estate init [--out-dir D] Scaffold a ready-to-commit estate repo: a
+                            GitHub Action that aggregates member repos and
+                            publishes the org-wide map to Pages, plus the
+                            repo list and a README.
   audit [--n=N] [--raw]     Print the last N audit log lines (default 20)
                             in a redacted human-readable form. Use --raw
                             to see the full JSON instead.
@@ -1357,6 +1368,145 @@ async function cmdSyncPull(
         (dryRun ? " (dry-run — no changes written)" : "") +
         "\n",
     );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `loreguard estate [<parent>] [--out-dir DIR]` — Epic A1.
+ *
+ * The enterprise-wide view, built as git + CI, NOT a server. Aggregates
+ * every team's committed `.loreguard/` under `<parent>` (the same walk as
+ * `sync pull`) into one DB, then emits the estate artifacts — a browsable
+ * `index.html` and a PR-diffable `architecture.json` — and reports the
+ * estate-wide gaps (dangling consumers that cross team boundaries are the
+ * highest-value signal: one team depends on a contract no team is shown to
+ * own). Intended to run in the estate repo's CI on a fresh checkout, with
+ * `LOREGUARD_DB` (or `--db`) pointed at a repo-local file so the aggregation
+ * is reproducible and never touches a developer's personal store.
+ */
+async function cmdEstate(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const { resolve, join: pathJoin, dirname } = await import("node:path");
+  const { mkdirSync } = await import("node:fs");
+
+  // `estate init` — scaffold a ready-to-commit estate repo (CI + repo list).
+  if (args.positionals[0] === "init") {
+    const { estateScaffoldFiles } = await import("./estate.js");
+    const targetDir = resolve(getString(args.flags, "out-dir") ?? ".");
+    const force = getBool(args.flags, "force");
+    const files = estateScaffoldFiles();
+    let written = 0;
+    let skipped = 0;
+    for (const f of files) {
+      const abs = pathJoin(targetDir, f.path);
+      if (existsSync(abs) && !force) {
+        process.stdout.write(`  · ${f.path} exists — skipped (use --force)\n`);
+        skipped++;
+        continue;
+      }
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, f.content, { encoding: "utf8" });
+      process.stdout.write(`  ✓ ${f.path}\n`);
+      written++;
+    }
+    process.stdout.write(
+      `\nloreguard estate init: wrote ${written} file(s)` +
+        (skipped > 0 ? `, skipped ${skipped}` : "") +
+        ` in ${targetDir}\n` +
+        "Next: fill loreguard-estate.repos.txt, add the ESTATE_READ_TOKEN secret,\n" +
+        "enable Pages (Settings → Pages → GitHub Actions), then run the workflow.\n",
+    );
+    return 0;
+  }
+
+  const parent = resolve(args.positionals[0] ?? ".");
+  if (!existsSync(parent)) {
+    process.stderr.write(`loreguard: estate — directory not found: ${parent}\n`);
+    return 2;
+  }
+  const outDir = getString(args.flags, "out-dir");
+  const dbPath = getString(args.flags, "db");
+  const includeRestricted = getBool(args.flags, "include-restricted");
+  const force = getBool(args.flags, "force");
+
+  const found = findLoreguardDirs(parent);
+  if (found.length === 0) {
+    process.stdout.write(
+      `loreguard estate: no .loreguard/ directories found under ${parent}.\n` +
+        "  Each member repo should `loreguard sync export .loreguard/` and commit it.\n",
+    );
+    return 0;
+  }
+
+  const db = openDb(dbPath);
+  try {
+    // 1. Aggregate every team's committed map into one store.
+    let created = 0;
+    let updated = 0;
+    let boundaries = 0;
+    for (const d of found) {
+      const r = importFromDir(db, d, { includeRestricted, force });
+      created += r.created;
+      updated += r.updated;
+      boundaries += r.boundariesCreated + r.boundariesUpdated;
+    }
+    const graph = buildRepoGraph(db);
+    const { matched, danglingConsumers, orphanProviders } = analyzeConnections(db);
+    process.stdout.write(
+      `loreguard estate: aggregated ${found.length} repo map(s) under ${parent}\n` +
+        `  ${created} record(s) imported, ${updated} updated, ${boundaries} boundary edge(s)\n` +
+        `  graph: ${graph.repos.length} repo(s), ${graph.deps.length} dependency edge(s)\n` +
+        `  contracts: ${matched.length} matched, ${danglingConsumers.length} dangling, ${orphanProviders.length} orphan\n`,
+    );
+
+    // 2. Estate-wide risk signal: contracts depended on but unowned (A4).
+    if (danglingConsumers.length > 0) {
+      process.stdout.write(
+        `\nDangling consumers (depended on across the estate, owned by no repo):\n`,
+      );
+      for (const c of danglingConsumers) {
+        process.stdout.write(`  ${c.contract}  ← ${c.consumers.join(", ")}\n`);
+      }
+    }
+
+    // 3. Emit the committable artifacts.
+    if (outDir) {
+      const absOut = resolve(outDir);
+      mkdirSync(absOut, { recursive: true });
+      const { renderHtml } = await import("./html.js");
+      const html = renderHtml({
+        lore: exportLore(db, { includeDrafts: false, includeRestricted: false }),
+        graph,
+        danglingConsumers,
+        generatedAt: new Date().toISOString(),
+      });
+      const htmlPath = pathJoin(absOut, "index.html");
+      writeFileSync(htmlPath, html, { encoding: "utf8" });
+      const manifest =
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            repos: graph.repos,
+            deps: graph.deps,
+            gaps: { danglingConsumers, orphanProviders },
+          },
+          null,
+          2,
+        ) + "\n";
+      const manifestPath = pathJoin(absOut, "architecture.json");
+      writeFileSync(manifestPath, manifest, { encoding: "utf8" });
+      process.stdout.write(
+        `\nWrote estate artifacts:\n  ${htmlPath}\n  ${manifestPath}\n` +
+          "Commit them (or publish index.html via GitHub Pages); architecture.json\n" +
+          "diffs in PRs so cross-team architecture drift is reviewable.\n",
+      );
+    } else {
+      process.stdout.write(
+        "\nPass --out-dir <dir> to write index.html + architecture.json.\n",
+      );
+    }
     return 0;
   } finally {
     db.close();
@@ -2615,6 +2765,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdExport(parsed);
       case "sync":
         return await cmdSync(parsed);
+      case "estate":
+        return await cmdEstate(parsed);
       case "setup":
         return await cmdSetup(parsed);
       case "quickstart":

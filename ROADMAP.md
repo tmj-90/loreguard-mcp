@@ -56,17 +56,22 @@ architecture map — into single answers.
 > e2e "repo A calls repo B" map. **Built as a git repo + CI, NOT a server**
 > (guardrail 1). Git is the auth, the audit log, and the review gate.
 
-- [ ] **A1 — `loreguard estate` aggregation command.** Point it at a checkout
-  of every repo (or a parent dir); it runs `sync pull` across all of them and
-  produces one combined DB + `export --html`. The CI job for the estate repo.
-- [ ] **A2 — Estate-repo scaffolding.** `loreguard estate init` writes a
-  ready-to-commit repo: a GitHub Action that checks out member repos, runs
-  aggregation, and publishes the map to GitHub Pages. Zero servers.
+- [x] **A1 — `loreguard estate` aggregation command.** Aggregates every
+  team's committed `.loreguard/` under `<parent>` (same walk as `sync pull`)
+  into one DB, then writes `index.html` + `architecture.json` to `--out-dir`
+  and reports estate-wide gaps. `--db` / `LOREGUARD_DB` targets a repo-local
+  file so CI runs are reproducible. **(done)**
+- [x] **A2 — Estate-repo scaffolding.** `loreguard estate init` writes a
+  ready-to-commit repo: a GitHub Action (checkout member repos → aggregate →
+  publish to Pages), the `loreguard-estate.repos.txt` list, and a README.
+  Idempotent (skips existing files without `--force`). Zero servers. **(done)**
 - [ ] **A3 — Per-team ownership in the aggregated view.** Surface which team /
   repo a record or edge came from, so the estate view is navigable by owner.
-- [ ] **A4 — Estate-wide gap report.** `graph --gaps` across the whole estate
-  — the dangling consumers that cross team boundaries are the highest-value
-  signal (one team depends on a contract no team is shown to own).
+  (Data already carries `repos`/`repo`; this is a UI grouping enhancement.)
+- [x] **A4 — Estate-wide gap report.** `estate` reports dangling consumers
+  across the whole estate — one team depending on a contract no team owns is
+  the highest-value cross-team signal; also embedded in the HTML + manifest.
+  **(done)**
 
 ## Epic B — Service cards (the per-repo TL;DR)
 

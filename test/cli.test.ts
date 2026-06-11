@@ -560,6 +560,56 @@ describe("CLI dispatch — quickstart / digest / tags", () => {
     expect(first).not.toMatch(/generatedAt|exportedAt|\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("estate init scaffolds the repo and refuses to clobber without --force", async () => {
+    const target = join(dir, "estate-repo");
+    out = "";
+    expect(await run("estate", "init", "--out-dir", target)).toBe(0);
+    expect(out).toMatch(/loreguard-estate\.yml/);
+    expect(readFileSync(join(target, "loreguard-estate.repos.txt"), "utf8")).toMatch(/owner\/repo/);
+    expect(readFileSync(join(target, ".github/workflows/loreguard-estate.yml"), "utf8")).toContain(
+      "loreguard estate ./repos",
+    );
+    // Re-run without --force: existing files skipped, not overwritten.
+    out = "";
+    expect(await run("estate", "init", "--out-dir", target)).toBe(0);
+    expect(out).toMatch(/skipped/);
+  });
+
+  it("estate aggregates committed repo maps and writes index.html + architecture.json", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const estateDb = join(dir, "estate.db");
+    // orders-svc: provides order-submitted, exported to its own .loreguard/
+    const ordersDir = join(dir, "orders-svc");
+    mkdirSync(ordersDir, { recursive: true });
+    const ordersDb = join(dir, "orders.db");
+    process.env["LOREGUARD_DB"] = ordersDb;
+    await run("init");
+    await run("boundary", "add", "orders-svc", "order-submitted", "provides");
+    await run("sync", "export", join(ordersDir, ".loreguard"));
+    // finance-svc: consumes order-submitted (matched) + daily-rollup (dangling)
+    const financeDir = join(dir, "finance-svc");
+    mkdirSync(financeDir, { recursive: true });
+    process.env["LOREGUARD_DB"] = join(dir, "finance.db");
+    await run("init");
+    await run("boundary", "add", "finance-svc", "order-submitted", "consumes");
+    await run("boundary", "add", "finance-svc", "daily-rollup", "consumes");
+    await run("sync", "export", join(financeDir, ".loreguard"));
+    // Aggregate the estate into a dedicated DB and emit artifacts.
+    process.env["LOREGUARD_DB"] = estateDb;
+    const site = join(dir, "site");
+    out = "";
+    expect(await run("estate", dir, "--out-dir", site)).toBe(0);
+    expect(out).toMatch(/aggregated 2 repo map/);
+    // daily-rollup is consumed but owned by no repo → estate-wide dangling.
+    expect(out).toMatch(/Dangling consumers[\s\S]*daily-rollup/);
+    const manifest = JSON.parse(readFileSync(join(site, "architecture.json"), "utf8"));
+    expect(manifest.repos).toEqual(["finance-svc", "orders-svc"]);
+    expect(manifest.deps[0]).toMatchObject({ from: "finance-svc", to: "orders-svc" });
+    expect(manifest.gaps.danglingConsumers.map((c: any) => c.contract)).toContain("daily-rollup");
+    const html = readFileSync(join(site, "index.html"), "utf8");
+    expect(html).toContain("<svg");
+  });
+
   it("export --html excludes restricted records even with --include-restricted (it's a shareable artifact)", async () => {
     await run("init");
     await run("add", "--title", "Public convention", "--summary", "s", "--body", "b");

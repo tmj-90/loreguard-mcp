@@ -918,6 +918,27 @@ captured yet (run `discover` / `sync pull` on the owning repo) or a genuinely
 external dependency worth labelling. The HTML export surfaces the same
 dangling-consumer warning on the page.
 
+### The org-wide estate — `loreguard estate`
+
+The enterprise rollup is **a git repo + CI, not a server.** `loreguard estate
+<parent> --out-dir site/` aggregates every team's committed `.loreguard/`
+under `<parent>` into one map, writes `site/index.html` (the browsable
+org-wide graph + records) and `site/architecture.json` (the PR-diffable
+manifest), and reports the **estate-wide dangling consumers** — a team
+depending on a contract no team owns is the single most valuable cross-team
+signal.
+
+```bash
+loreguard estate init --out-dir my-estate-repo   # scaffold the CI repo
+# → a GitHub Action (checkout member repos → aggregate → publish to Pages),
+#   a repos list, and a README. Fill the list, add a read token, enable Pages.
+```
+
+Git is the auth, the audit log, and the review gate; nothing runs a server or
+touches the network. In CI, point `LOREGUARD_DB` at a repo-local file so each
+run rebuilds the estate reproducibly from a fresh checkout. See
+[`ROADMAP.md`](ROADMAP.md) for the full estate epic.
+
 ### A browsable, committable view — `loreguard export --html`
 
 `loreguard export --html --out docs/lore.html` writes a **single
