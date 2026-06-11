@@ -139,5 +139,6 @@ server `env` block (or the shell that launches it):
 | `LOREGUARD_ALLOW_MCP_ABSENCE=1` | Let agents write absence markers. Off by default. |
 | `LOREGUARD_NO_TELEMETRY=1` | Silence local read tracking. |
 
-See the main [README](../README.md#where-data-lives) for the full list and the
-trust model. Nothing here reaches the network — the server is stdio-only.
+See [`operations.md`](operations.md#environment-knobs-all-local-only--none-reach-the-network)
+for the full list, and the [README](../README.md#trust-model) for the trust
+model. Nothing here reaches the network — the server is stdio-only.
