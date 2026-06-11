@@ -144,6 +144,18 @@ export interface SearchOptions {
    * three-character prefix can hit half the index.
    */
   readonly prefix?: boolean;
+  /**
+   * How multiple query tokens combine.
+   *   - "any" (default): tokens OR together — high recall. A query of N
+   *     tokens surfaces records matching any subset; bm25 floats records
+   *     matching more tokens to the top. Good for exploration and the
+   *     cold-corpus case where no record contains every token.
+   *   - "all": tokens AND together — high precision. Only records matching
+   *     EVERY token (or quoted phrase) are returned. Use when "any" floods.
+   * Independent of phrase matching: a `"quoted phrase"` in the query is a
+   * single adjacency-matched unit under either mode.
+   */
+  readonly match?: "any" | "all";
   readonly limit?: number;
 }
 

@@ -80,9 +80,13 @@ COMMANDS
                             from remote.origin.url. Lands as a draft;
                             promote via review. --repo/--tag/--source apply.
   search <query...>         Full-text search. Returns brief summaries.
+                            Words OR together by default (recall); pass
+                            --all to require every word (precision), or
+                            "quote a phrase" to match adjacent words.
                             Flags: --repo, --tag (repeatable for ANY-of),
-                            --prefix (match tokens of 3+ chars as
-                            prefixes), --updated-after, --include-drafts,
+                            --all (AND instead of OR), --prefix (match
+                            tokens of 3+ chars as prefixes),
+                            --updated-after, --include-drafts,
                             --include-deprecated, --include-superseded,
                             --include-restricted, --limit
   show <id>                 Print the full record (body included).
@@ -451,6 +455,9 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const includeSuperseded = getBool(args.flags, "include-superseded");
   const includeRestricted = getBool(args.flags, "include-restricted");
   const prefix = getBool(args.flags, "prefix");
+  // --all switches token combination from OR (default, recall) to AND
+  // (precision). Quoted "phrases" in the query string work under either.
+  const match: "any" | "all" = getBool(args.flags, "all") ? "all" : "any";
   const db = openDb();
   try {
     const searchOpts = {
@@ -458,6 +465,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
       repo,
       tag,
       prefix,
+      match,
       updatedAfter,
       limit,
       includeDrafts,

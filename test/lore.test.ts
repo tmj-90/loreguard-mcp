@@ -506,6 +506,63 @@ describe("core/lore", () => {
     });
   });
 
+  describe("searchLore — match mode (any/all) and quoted phrases", () => {
+    beforeEach(() => {
+      addLore(db, {
+        title: "Password hashing default",
+        summary: "Argon2id everywhere.",
+        body: "b",
+        tags: ["security"],
+      });
+      addLore(db, {
+        title: "Password rotation policy",
+        summary: "Rotate every 90 days.",
+        body: "b",
+        tags: ["security"],
+      });
+      addLore(db, {
+        title: "Image hashing for dedupe",
+        summary: "Perceptual hashing of uploads.",
+        body: "b",
+        tags: ["media"],
+      });
+    });
+
+    it("default (any) is OR — 'password hashing' surfaces all three single-token matches", () => {
+      const ids = searchLore(db, { query: "password hashing" }).map((h) => h.id);
+      // password* matches two, hashing* matches two, union = all three.
+      expect(ids).toHaveLength(3);
+    });
+
+    it("match:'all' is AND — only the record matching BOTH words comes back", () => {
+      const hits = searchLore(db, { query: "password hashing", match: "all" });
+      expect(hits).toHaveLength(1);
+      expect(hits[0]!.title).toBe("Password hashing default");
+    });
+
+    it("a quoted phrase matches adjacency, not loose word co-occurrence", () => {
+      // "image hashing" as a phrase hits only the record where the two
+      // words are adjacent — not the password records.
+      const hits = searchLore(db, { query: '"image hashing"' });
+      expect(hits.map((h) => h.title)).toEqual(["Image hashing for dedupe"]);
+    });
+
+    it("a phrase plus a bare token still ORs by default", () => {
+      const ids = searchLore(db, { query: '"password hashing" rotation' }).map(
+        (h) => h.title,
+      );
+      expect(ids).toContain("Password hashing default");
+      expect(ids).toContain("Password rotation policy");
+    });
+
+    it("a stray unbalanced quote is stripped, never injected as an operator", () => {
+      // Would be a syntax error if the lone quote reached FTS verbatim.
+      expect(() => searchLore(db, { query: 'password" hashing' })).not.toThrow();
+      const hits = searchLore(db, { query: 'password" hashing' });
+      expect(hits.length).toBeGreaterThan(0);
+    });
+  });
+
   describe("searchLore — trust-aware ranking", () => {
     it("promotes a sourced/high-confidence record over a sourceless near-tie", () => {
       // Two records with the same matching token in the title so bm25 is

@@ -1159,7 +1159,9 @@ function buildSearchClauses(opts: SearchOptions): {
     : `lore l`;
   if (hasFts) {
     filters.push("lore_fts MATCH ?");
-    params.push(toFtsQuery(opts.query!.trim(), !!opts.prefix));
+    params.push(
+      toFtsQuery(opts.query!.trim(), !!opts.prefix, opts.match ?? "any"),
+    );
   }
   filters.push(`l.status IN (${allowedStatuses.map(() => "?").join(",")})`);
   params.push(...allowedStatuses);
@@ -1359,39 +1361,63 @@ function hasIntersection(
 }
 
 /**
- * Translate a free-text query into an FTS5 MATCH expression.
- * Split on whitespace, drop empties, quote each term — stops users
- * accidentally tripping FTS operators (NEAR, OR, AND, ", :, etc.).
+ * Translate a free-text query into an FTS5 MATCH expression. Every unit
+ * is quoted before it reaches FTS, so users can't accidentally trip FTS
+ * operators (NEAR, OR, AND, ", :, etc.) — quoting is the safety boundary.
  *
- * **OR-mode, ranked by bm25.** FTS5 defaults to AND across tokens, which
- * makes multi-word queries brittle (real dogfood: 5 queries against a
- * fresh corpus returned 0 hits because no record contained EVERY token).
- * We join with explicit `OR` so a query of N tokens surfaces records
- * matching any subset; bm25 ranking then puts records matching MORE
- * tokens (and matching them in higher-weighted columns — see column
- * weights at search-site `bm25(lore_fts, 3.0, 2.0, 1.0)`) at the top.
- * Net behaviour: "deployment kafka" surfaces Kafka-only records when
- * nothing matches both, but Kafka-and-deployment records (if any
- * existed) would still rank first.
+ * **Two precision levers, both opt-in, default = recall:**
  *
- * When `prefix` is true, every quoted token of length ≥ 3 is suffixed
- * with `*` so it matches as a prefix ("timez" → "timezone"). Tokens
- * shorter than 3 chars stay exact-match because a 1–2 char prefix is
- * usually meaningless and slow.
+ * 1. `"quoted phrases"` — a balanced double-quoted span in the input is
+ *    kept as a single FTS5 phrase (adjacency match): `"password hashing"`
+ *    matches records where those words appear together, not just records
+ *    containing each word somewhere. Unbalanced / stray quotes are
+ *    stripped (the old defensive behaviour) so a lone `"` can't inject an
+ *    operator. Bare words outside quotes tokenise as before.
+ *
+ * 2. `match` — how the units combine:
+ *    - `"any"` (default): join with explicit `OR`. FTS5 defaults to AND,
+ *      which makes multi-word queries brittle (real dogfood: 5 queries
+ *      against a fresh corpus returned 0 hits because no record contained
+ *      EVERY token). OR surfaces records matching any subset; bm25 then
+ *      floats records matching MORE units (and matching them in
+ *      higher-weighted columns — see `bm25(lore_fts, 3.0, 2.0, 1.0)`) to
+ *      the top. "deployment kafka" surfaces Kafka-only records when
+ *      nothing matches both, Kafka-and-deployment records ranking first.
+ *    - `"all"`: join with `AND`. Only records matching EVERY unit come
+ *      back — high precision for when `"any"` floods a grown corpus.
+ *
+ * When `prefix` is true, every bare token of length ≥ 3 is suffixed with
+ * `*` so it matches as a prefix ("timez" → "timezone"). Quoted phrases
+ * are left exact (phrase-prefix is niche and surprising). Tokens shorter
+ * than 3 chars stay exact-match because a 1–2 char prefix is usually
+ * meaningless and slow.
  */
-function toFtsQuery(input: string, prefix: boolean): string {
-  const parts = input
+function toFtsQuery(
+  input: string,
+  prefix: boolean,
+  match: "any" | "all" = "any",
+): string {
+  const units: string[] = [];
+  // 1. Pull out balanced "quoted phrases" first; keep them as FTS phrases.
+  const phraseRe = /"([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = phraseRe.exec(input)) !== null) {
+    const phrase = m[1]!.trim().replace(/"/g, "");
+    if (phrase) units.push(`"${phrase}"`);
+  }
+  // 2. Tokenise whatever's left after removing the phrase spans. Any
+  //    leftover (unbalanced) quote is stripped — never passed to FTS.
+  const bareTokens = input
+    .replace(phraseRe, " ")
     .split(/\s+/)
     .map((p) => p.replace(/"/g, ""))
     .filter(Boolean);
-  if (parts.length === 0) return '""';
-  const tokens = parts.map((p) =>
-    prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`,
-  );
-  // One token: no operator needed (FTS5 happy with bare quoted term).
-  // Multiple tokens: explicit OR so partial matches surface; bm25
-  // does the ranking work.
-  return tokens.length === 1 ? tokens[0]! : tokens.join(" OR ");
+  for (const t of bareTokens) {
+    units.push(prefix && t.length >= 3 ? `"${t}"*` : `"${t}"`);
+  }
+  if (units.length === 0) return '""';
+  if (units.length === 1) return units[0]!;
+  return units.join(match === "all" ? " AND " : " OR ");
 }
 
 export interface PossibleDuplicate extends LoreSummary {

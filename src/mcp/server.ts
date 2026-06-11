@@ -199,6 +199,17 @@ export function buildMcpServer(db: Database): McpServer {
               "('timez' → 'timezone'). Off by default; turn on when you're " +
               "guessing at a term or want broader recall.",
           ),
+        match: z
+          .enum(["any", "all"])
+          .optional()
+          .describe(
+            "How query words combine. 'any' (default) ORs them — high " +
+              "recall, ranked so records matching more words rank higher. " +
+              "'all' ANDs them — only records matching EVERY word come " +
+              "back; use it when an 'any' search floods you with loosely " +
+              "related hits. Either way, wrap words in \\\"double quotes\\\" " +
+              "to match them as an adjacent phrase.",
+          ),
         updatedAfter: z
           .string()
           .optional()
@@ -249,6 +260,7 @@ export function buildMcpServer(db: Database): McpServer {
           repo: args.repo,
           tag: args.tag,
           prefix: args.prefix,
+          match: args.match,
           updatedAfter: args.updatedAfter,
           includeDrafts: args.includeDrafts,
           includeDeprecated: args.includeDeprecated,
