@@ -1593,6 +1593,25 @@ export function listRecent(db: Database, limit = 20): LoreSummary[] {
 }
 
 /** Drafts awaiting human review. Surfaced by `loreguard review`. */
+/**
+ * Active records whose `review_after` has lapsed — i.e. records search
+ * flags `stale: true`. Lightweight projection (id / title / reviewAfter),
+ * oldest review date first, so `loreguard digest` can list the records
+ * most overdue for a human look without hydrating full bodies.
+ */
+export function listStaleActive(
+  db: Database,
+): Array<{ id: string; title: string; reviewAfter: string }> {
+  return db
+    .prepare(
+      `SELECT id, title, review_after AS reviewAfter
+       FROM lore
+       WHERE status = 'active' AND review_after IS NOT NULL AND review_after < ?
+       ORDER BY review_after ASC`,
+    )
+    .all(nowIso()) as Array<{ id: string; title: string; reviewAfter: string }>;
+}
+
 export function listDrafts(db: Database): LoreSummary[] {
   const rows = db
     .prepare(

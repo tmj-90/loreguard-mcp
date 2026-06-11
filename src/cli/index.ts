@@ -47,6 +47,7 @@ import {
 } from "../core/lore.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
 import { cleanDemo, countLore, seedDemo } from "./demo.js";
+import { buildDigest, renderDigest } from "./digest.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
 import {
@@ -196,6 +197,11 @@ COMMANDS
                             zero reads in N days), recent activity.
                             Opt out of read tracking via
                             LOREGUARD_NO_TELEMETRY=1.
+  digest [--quiet-for-days N] [--json]
+                            "What needs a human decision?" roll-up:
+                            open conflicts, pending drafts, stale
+                            active records, retirement candidates, and
+                            pending boundary edges in one list.
   prune [--read-events-older-than N] [--vacuum] [--dry-run]
                             Local-DB GC. Deletes 'read' audit events
                             older than N days (default 90; lifecycle
@@ -944,6 +950,33 @@ async function cmdRepos(): Promise<number> {
       return 0;
     }
     process.stdout.write(rs.join("\n") + "\n");
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdDigest(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const raw = getString(args.flags, "quiet-for-days");
+  let quietForDays = 180;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) {
+      process.stderr.write(
+        `loreguard digest: --quiet-for-days must be a positive integer (got ${JSON.stringify(raw)})\n`,
+      );
+      return 2;
+    }
+    quietForDays = n;
+  }
+  const db = openDb();
+  try {
+    const digest = buildDigest(db, { quietForDays });
+    if (getBool(args.flags, "json")) {
+      process.stdout.write(JSON.stringify(digest, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(renderDigest(digest) + "\n");
     return 0;
   } finally {
     db.close();
@@ -2192,6 +2225,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdAbsent(parsed);
       case "stats":
         return await cmdStats(parsed);
+      case "digest":
+        return await cmdDigest(parsed);
       case "prune":
         return await cmdPrune(parsed);
       case "impact":
