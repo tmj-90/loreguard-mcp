@@ -18,6 +18,22 @@ just-in-time, team-ratified context** — agents call `search_lore` only when a
 task warrants it, and get a compact summary of what the team already decided
 instead of reasoning from scratch.
 
+### The loop, concretely
+
+```text
+You:    "Add password hashing to the signup flow."
+Claude: <search_lore("password hashing")>
+        → "Argon2id is the default (bcrypt deprecated after 2025-INC-411),
+           m=64MB t=3 p=4. [active, high confidence, sourced ADR]"
+        Implements Argon2id instead of the bcrypt it would have reached for.
+        <suggest_lore("signup uses the shared hashPassword() helper")>  # draft
+You:    loreguard review     # approve the keeper, reject the noise — you're the gate
+```
+
+Without loreguard, the agent re-derives "which hash?" from scratch and may
+reintroduce the very pattern an incident already retired. The win is the
+mistake that *didn't* happen; the cost is one human review keystroke.
+
 ---
 
 ## Quickstart
@@ -133,7 +149,10 @@ against — and a path (`report_conflict` → human review) to update it.
 
 Rule of thumb: applies every session → `CLAUDE.md`. One user's preference →
 agent memory. A *team* should agree on it across repos and sessions →
-loreguard.
+loreguard. **Sharpest cut: reach for loreguard when *wrong* memory would cause
+real project damage** — auth, payments, migrations, cross-repo contracts,
+incident lessons. If a bad recollection is merely mildly annoying, it probably
+isn't lore.
 
 ## Trust model
 
@@ -147,6 +166,11 @@ Every record carries lifecycle + provenance metadata so retrieval is honest:
 | `reviewAfter` | ISO date; if past, search flags `stale: true`. |
 | `restricted` | Excluded from search by default; MCP access env-gated. A retrieval guard, **not** DLP. |
 | `lastVerifiedAt` | Bumped by `loreguard verify <id>`. |
+
+These aren't just prose — each guarantee (agents can't approve, drafts hidden,
+sourceless can't be `high`, restricted gated, audit excludes bodies, …) is
+pinned to an explicit test. See
+[`docs/INVARIANTS.md`](docs/INVARIANTS.md).
 
 ## What else it does
 

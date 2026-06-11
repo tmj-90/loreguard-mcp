@@ -109,6 +109,29 @@ architecture map — into single answers.
 - [ ] **D2 — Hook upgrades (deferred by request).** SessionStart primer +
   Stop-hook session summary from DB ground truth. Parked.
 
+## Epic E — Adoption & curation friction (the real risk)
+
+> External and internal reviews both land here: the tech isn't the risk —
+> whether teams *keep curating* is. The product has to prove it stays
+> low-noise and saves more time than it costs, or the trust gate decays into
+> "approve all." Partly addressed already (the single judgement-based
+> cold-start path replaced the ~80%-noise mechanical importers; `digest`
+> surfaces the backlog; near-duplicate tag detection; `relatedLore` precision)
+> — but unmeasured.
+
+- [ ] **E1 — Review-queue noise budget.** Make "low-noise by default" a
+  measurable promise: track draft accept/reject rate and queue size over time
+  (`stats`/`digest`), warn when the queue is growing faster than it's cleared
+  or the reject rate spikes (a sign onboarding is over-producing). The README
+  should be able to claim a number, not just an intention.
+- [ ] **E2 — Time-saved evidence.** A lightweight way to see the counterfactual
+  win (e.g. searches that hit a deprecated/stale record the agent would
+  otherwise have followed). Turns the invisible payoff into something a team
+  lead can point at — the thing every reviewer asks for.
+- [ ] **E3 — Visible loop demo.** A recorded terminal cast (asciinema) of the
+  task → search → avoid-mistake → suggest → review loop, linked from the
+  README. The product is abstract until the loop is seen.
+
 ---
 
 _Checklist convention: `[ ]` open, `[~]` in progress, `[x]` done. Keep the

@@ -4,7 +4,70 @@ All notable changes to **loreguard-mcp**. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 itself is pre-1.0 so semver promises are best-effort.
 
-## [Unreleased]
+## [0.2.0] — 2026-06-11
+
+### Added — retrieval, curation & onboarding
+
+- **Phrase + AND search.** `search_lore` / `loreguard search` gain a `match`
+  mode (`any` default OR, `all` for AND) and honour `"quoted phrases"` as
+  adjacency matches. Default behaviour unchanged.
+- **Tag hygiene.** `loreguard tags` lists with counts and flags likely-typo'd
+  near-duplicates; `tags rename` / `tags merge` repair them; `doctor` warns.
+- **`loreguard quickstart`** — init + seed a demo set + a live search hit in
+  one command (kills the cold-start "empty corpus looks broken" trap).
+- **`loreguard digest`** — the "what needs a human decision?" roll-up: open
+  conflicts, pending drafts, stale-active records, retire candidates, and
+  pending boundary edges in one list.
+- **Value-led `stats`** — leads with retrievals + an estimate of reviewed
+  summary text *served* into agent context (honest "served", not "saved").
+- **Multi-client support** — `print-claude-instructions --format
+  claude|cursor|windsurf|generic` and `docs/clients.md` for non-Claude editors.
+
+### Added — cross-repo architecture brain
+
+- **Repo-level, multi-hop graph.** `loreguard graph [<repo>]` lifts boundary
+  edges into a repo dependency graph and walks it transitively (full
+  upstream/downstream blast radius, cycle-safe).
+- **Auto-discovery.** `loreguard discover` statically scans source for
+  contract signals (HTTP routes, pub/sub topics, queue consumers) and
+  *proposes* edges as drafts (dry-run by default; `--write` lands them).
+  Confidence-tiered (high-signal vs review) and shows the cross-repo "join
+  moment" inline.
+- **Gap analysis** — `graph --gaps` surfaces dangling consumers (depended on,
+  unowned) and orphan providers.
+- **Lore ↔ contracts.** `impact` / `find_dependents` now return
+  `applicableLore` — the rules that govern a contract, beside its blast radius.
+- **PR-diffable manifest** — `graph --manifest` emits a deterministic,
+  timestamp-free `architecture.json` so drift shows up as a PR diff.
+- **The org-wide estate** — `loreguard estate` aggregates every team's
+  committed `.loreguard/` into one map + `index.html` + manifest; `estate
+  init` scaffolds the CI repo. Git + CI, no server.
+
+### Added — distribution & safety
+
+- **Self-contained HTML export** — `loreguard export --html` writes an
+  offline, no-network page (records + architecture graph); restricted records
+  excluded.
+- **Write-path secret guard** — credential-shaped bodies are refused on `add`
+  / `suggest_lore` (format-only detection, near-zero false positives; no
+  agent-facing override).
+
+### Fixed
+
+- `relatedLore` no longer records `read` events for display-only queries
+  (was inflating `stats`/retirement signals).
+- `export --html` no longer leaks restricted records when
+  `--include-restricted` is set, and no longer runs a redundant query.
+
+### Docs
+
+- README slimmed to a front-door (~200 lines) with deep material moved to
+  `docs/{guide,tools,cross-repo,operations}.md`; `docs/INVARIANTS.md` maps
+  each trust guarantee to its enforcing test; `ROADMAP.md` added.
+
+> Cutting the `v0.2.0` git tag and `npm publish` are release actions left to
+> the maintainer. `package.json` and this changelog now agree on `0.2.0`.
+> (The entries below were unreleased work that also ships in 0.2.0.)
 
 ### Fixed — MCP tools return structured errors, not opaque -32602 dumps
 
