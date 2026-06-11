@@ -822,6 +822,35 @@ contract and `declare_boundary` when it discovers a producer/consumer
 relationship that isn't on the map yet. An empty `impact` result is not
 proof a change is safe — only that the map doesn't cover it yet.
 
+**Repo-level, multi-hop view — `loreguard graph`.** `impact` answers one
+hop (direct providers/consumers of one contract). `graph` lifts the edges
+into a repo dependency graph and walks it transitively:
+
+```bash
+loreguard graph                 # the whole map: who depends on / is used by whom
+loreguard graph orders-svc      # one repo's full blast radius
+#   Downstream (affected if you change orders-svc): 3
+#     · billing-svc    (orders-svc → billing-svc)
+#     · reporting-svc  (orders-svc → reporting-svc)
+#     ·· finance-svc   (orders-svc → reporting-svc → finance-svc)   ← 2 hops
+#   Upstream (orders-svc depends on): 0
+```
+
+`finance-svc` shows up even though it never touches `order-submitted` — it
+consumes `reporting-svc`'s rollups, which depend on it. That transitive
+reach is the "what actually breaks" answer a one-hop check can't give.
+
+### A browsable, committable view — `loreguard export --html`
+
+`loreguard export --html --out docs/lore.html` writes a **single
+self-contained HTML file**: the architecture graph as an inline SVG plus
+every record as a client-side-filterable card with its trust badges. No
+server, no network, no external scripts — it renders offline and from
+`file://`, so you can commit it to the repo as living documentation or
+publish it via GitHub Pages. Restricted records are excluded; it's safe to
+share. (This is the deliberate alternative to a web UI — a generated
+artifact, not a daemon, consistent with the local-only posture.)
+
 ### Inspect / back up your lore
 
 `loreguard export` writes the DB as a single JSON document so you can read,

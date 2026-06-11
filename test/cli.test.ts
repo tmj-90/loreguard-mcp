@@ -8,7 +8,7 @@
  * and capture writes by patching process.stdout / process.stderr. Each
  * test gets its own DB via LOREGUARD_DB; audit + telemetry are silenced.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -486,6 +486,35 @@ describe("CLI dispatch — quickstart / digest / tags", () => {
         "--allow-secrets",
       ),
     ).toBe(0);
+  });
+
+  it("graph shows multi-hop downstream blast radius for a repo", async () => {
+    await run("init");
+    await run("boundary", "add", "orders-svc", "order-submitted", "provides");
+    await run("boundary", "add", "reporting-svc", "order-submitted", "consumes");
+    await run("boundary", "add", "reporting-svc", "daily-rollup", "provides");
+    await run("boundary", "add", "finance-svc", "daily-rollup", "consumes");
+    out = "";
+    expect(await run("graph", "orders-svc")).toBe(0);
+    expect(out).toMatch(/Downstream.*: 2/s);
+    // finance-svc is reached transitively through reporting-svc.
+    expect(out).toMatch(/orders-svc → reporting-svc → finance-svc/);
+  });
+
+  it("export --html writes a self-contained page with records and the graph", async () => {
+    await run("init");
+    await run("add", "--title", "Argon2id default", "--summary", "s", "--body", "b", "--repo", "orders-svc");
+    await run("boundary", "add", "orders-svc", "order-submitted", "provides");
+    await run("boundary", "add", "reporting-svc", "order-submitted", "consumes");
+    const outPath = join(dir, "lore.html");
+    out = "";
+    expect(await run("export", "--html", "--out", outPath)).toBe(0);
+    const html = readFileSync(outPath, "utf8");
+    expect(html.startsWith("<!doctype html>")).toBe(true);
+    expect(html).toContain("Argon2id default");
+    expect(html).toContain("<svg");
+    // Self-contained: no external resource loads.
+    expect(/<script[^>]*\ssrc=/.test(html)).toBe(false);
   });
 
   it("tags lists with counts and merges near-duplicates", async () => {

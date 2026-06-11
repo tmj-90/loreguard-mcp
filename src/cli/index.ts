@@ -134,12 +134,17 @@ COMMANDS
                             tags rename <from> <to>,
                             tags merge <from...> <into>.
   repos                     Print all distinct repos.
-  export [--out <path>]     Export lore as a single JSON document
+  export [--out <path>] [--html]
+                            Export lore as a single JSON document
                             (envelope: { schemaVersion, exportedAt,
                             records }). Default: active + non-restricted
                             only, stable ordering by updated_at desc.
                             Without --out, writes to stdout. With --out,
                             writes the file with mode 0600.
+                            --html instead writes a self-contained,
+                            offline HTML page (records + architecture
+                            graph) you can commit or publish — no server,
+                            no network, restricted records excluded.
                             Opt-ins: --include-drafts,
                             --include-deprecated, --include-superseded,
                             --include-restricted.
@@ -1282,6 +1287,7 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
 
 async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
   const out = getString(args.flags, "out");
+  const asHtml = getBool(args.flags, "html");
   const includeDrafts = getBool(args.flags, "include-drafts");
   const includeDeprecated = getBool(args.flags, "include-deprecated");
   const includeSuperseded = getBool(args.flags, "include-superseded");
@@ -1294,6 +1300,29 @@ async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
       includeSuperseded,
       includeRestricted,
     });
+    if (asHtml) {
+      // Self-contained static page: records + architecture graph. Drafts
+      // are included in the data so the page's "show drafts" toggle has
+      // something to reveal; default-active records are what shows first.
+      const { renderHtml } = await import("./html.js");
+      const html = renderHtml({
+        lore: exportLore(db, {
+          includeDrafts: true,
+          includeDeprecated,
+          includeSuperseded,
+          includeRestricted,
+        }),
+        graph: buildRepoGraph(db, { includeDrafts }),
+        generatedAt: new Date().toISOString(),
+      });
+      if (out) {
+        writeFileSync(out, html, { encoding: "utf8" });
+        process.stdout.write(`loreguard: wrote HTML export to ${out}\n`);
+      } else {
+        process.stdout.write(html);
+      }
+      return 0;
+    }
     const envelope = {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
